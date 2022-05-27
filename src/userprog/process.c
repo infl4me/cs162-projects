@@ -102,6 +102,34 @@ static void start_process(void* file_name_) {
     success = load(file_name, &if_.eip, &if_.esp);
   }
 
+  /* puts argc and argvs onto the stack
+    (currently only puts file_name, arguments not supported)
+    and other values according to 80x86 convention.
+  */
+  if (success) {
+    int len = strlen(file_name) + 1;
+    int offset = len + (16 - len % 16);
+    void* esp = if_.esp - offset;
+    strlcpy(esp, file_name, len); // copy the file_name onto the stack
+
+    esp = (char**)esp - 1;
+    *(char**)esp = NULL; // argv[argc] = NULL
+
+    esp = (char**)esp - 1;
+    *(char***)esp = (char**)esp + 2; // push pointer to the file_name
+
+    esp = (char**)esp - 1;
+    *(char***)esp = (char**)esp + 1; // push pointer to argv
+
+    esp = (int*)esp - 1;
+    *(int*)esp = 1; // argc = 1
+
+    esp = (char**)esp - 1;
+    *(char**)esp = NULL; // fake return address
+
+    if_.esp = esp;
+  }
+
   /* Handle failure with succesful PCB malloc. Must free the PCB */
   if (!success && pcb_success) {
     // Avoid race where PCB is freed before t->pcb is set to NULL
@@ -473,7 +501,7 @@ static bool setup_stack(void** esp) {
   if (kpage != NULL) {
     success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE, kpage, true);
     if (success)
-      *esp = PHYS_BASE - 20;
+      *esp = PHYS_BASE;
     else
       palloc_free_page(kpage);
   }
