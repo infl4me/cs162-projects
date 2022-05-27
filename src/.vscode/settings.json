@@ -1,0 +1,23 @@
+{
+  "makefile.extensionOutputFolder": "./.vscode",
+  "files.associations": {
+    "serial.h": "c",
+    "tests.h": "c",
+    "exception.h": "c",
+    "init.h": "c",
+    "unistd.h": "c",
+    "ioctl.h": "c",
+    "stat.h": "c",
+    "termios.h": "c",
+    "stdio.h": "c",
+    "vga.h": "c",
+    "syscall-nr.h": "c",
+    "string.h": "c",
+    "syscall.h": "c",
+    "interrupt.h": "c",
+    "thread.h": "c",
+    "file.h": "c",
+    "process.h": "c",
+    "pthread.h": "c"
+  }
+}

@@ -4,6 +4,7 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "userprog/process.h"
+#include "filesys/file.h"
 
 static void syscall_handler(struct intr_frame*);
 
@@ -19,11 +20,17 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
    * include it in your final submission.
    */
 
-  /* printf("System call number: %d\n", args[0]); */
+  printf("System call number: %d\n", args[0]);
 
   if (args[0] == SYS_EXIT) {
     f->eax = args[1];
     printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
     process_exit();
+  } else if (args[0] == SYS_WRITE) {
+    if (args[1] == STDOUT_FILENO) {
+      // if write target is stdout, redirect it to kernel console
+      putbuf(args[2], args[3]);
+      f->eax = args[3];
+    }
   }
 }

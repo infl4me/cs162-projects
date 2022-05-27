@@ -60,7 +60,8 @@ dkms.conf
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*
@@ -148,7 +149,7 @@ tags
 .idea
 
 ### VSCode ###
-.vscode
+**/.vscode/**/*.log
 .history
 
 ### SublimeText ###
