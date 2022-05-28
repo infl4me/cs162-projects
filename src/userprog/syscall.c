@@ -34,7 +34,7 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     case SYS_WRITE:
       if (args[1] == STDOUT_FILENO) {
         // if write target is stdout, redirect it to kernel console
-        putbuf((char *) args[2], args[3]);
+        putbuf((char*)args[2], args[3]);
         f->eax = args[3];
       } else {
         NOT_REACHED();
