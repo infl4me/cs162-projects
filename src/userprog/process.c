@@ -130,8 +130,9 @@ static void start_process(void* command_) {
     put argc, argv and other values according to 80x86 convention onto the stack
   */
   if (success) {
-    if_.esp -= command_total_length + (16 - command_total_length % 16); // align stack to 16-byte
-    memcpy(if_.esp, command, command_total_length); // copy arguments onto the stack
+    if_.esp -= (command_total_length + (16 - command_total_length % 16)) +
+               (16 - (sizeof(char*) * (argc - 1) % 16)); // align stack to 16-byte
+    memcpy(if_.esp, command, command_total_length);      // copy arguments onto the stack
 
     void* esp = if_.esp; // if_.esp now is the base where the arguments start
 
