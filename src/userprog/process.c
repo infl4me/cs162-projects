@@ -71,8 +71,8 @@ pid_t process_execute(const char* file_name) {
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void* file_name_) {
-  char* file_name = (char*)file_name_;
+static void start_process(void* command_) {
+  char* command = (char*)command_;
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
@@ -80,6 +80,30 @@ static void start_process(void* file_name_) {
   /* Allocate process control block */
   struct process* new_pcb = malloc(sizeof(struct process));
   success = pcb_success = new_pcb != NULL;
+
+  int argc = 0;
+  int max_argc = 15;
+  char* argv[max_argc];
+  int file_name_length;
+  int command_total_length;
+
+  // break command into controllable array of pointers
+  if (success) {
+    char* save_ptr;
+    char* token = strtok_r(command, " ", &save_ptr);
+
+    for (argc = 0; argc < max_argc && token != NULL; argc++) {
+      argv[argc] = token;
+      token = strtok_r(NULL, " ", &save_ptr);
+    }
+
+    success = argc && argv[0] != NULL;
+
+    if (success) {
+      file_name_length = strlen(argv[0]) + 1;
+      command_total_length = argv[argc - 1] - argv[0] + file_name_length;
+    }
+  }
 
   /* Initialize process control block */
   if (success) {
@@ -90,7 +114,7 @@ static void start_process(void* file_name_) {
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
-    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    strlcpy(t->pcb->process_name, argv[0], file_name_length);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -99,33 +123,37 @@ static void start_process(void* file_name_) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
+    success = load(argv[0], &if_.eip, &if_.esp);
   }
 
-  /* puts argc and argvs onto the stack
-    (currently only puts file_name, arguments not supported)
-    and other values according to 80x86 convention.
+  /* 
+    put argc, argv and other values according to 80x86 convention onto the stack
   */
   if (success) {
-    int len = strlen(file_name) + 1;
-    int offset = len + (16 - len % 16);
-    void* esp = if_.esp - offset;
-    strlcpy(esp, file_name, len); // copy the file_name onto the stack
+    if_.esp -= command_total_length + (16 - command_total_length % 16); // align stack to 16-byte
+    memcpy(if_.esp, command, command_total_length); // copy arguments onto the stack
+
+    void* esp = if_.esp; // if_.esp now is the base where the arguments start
 
     esp = (char**)esp - 1;
     *(char**)esp = NULL; // argv[argc] = NULL
 
-    esp = (char**)esp - 1;
-    *(char***)esp = (char**)esp + 2; // push pointer to the file_name
+    int offset;
+    // push pointers to the arguments onto the stack
+    for (int i = argc - 1; i >= 0; i--) {
+      esp = (char**)esp - 1;
+      offset = i > 0 ? argv[i] - argv[i - 1] : 0;
+      *(char**)esp = (char*)if_.esp + offset;
+    }
 
     esp = (char**)esp - 1;
     *(char***)esp = (char**)esp + 1; // push pointer to argv
 
     esp = (int*)esp - 1;
-    *(int*)esp = 1; // argc = 1
+    *(int*)esp = argc; // push argc
 
     esp = (char**)esp - 1;
-    *(char**)esp = NULL; // fake return address
+    *(char**)esp = NULL; // push fake return address
 
     if_.esp = esp;
   }
@@ -141,7 +169,7 @@ static void start_process(void* file_name_) {
   }
 
   /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(file_name);
+  palloc_free_page(command_);
   if (!success) {
     sema_up(&temporary);
     thread_exit();
