@@ -82,7 +82,7 @@ static void start_process(void* command_) {
   success = pcb_success = new_pcb != NULL;
 
   int argc = 0;
-  int max_argc = 15;
+  int max_argc = 30;
   char* argv[max_argc];
   int file_name_length;
   int command_total_length;
@@ -138,12 +138,10 @@ static void start_process(void* command_) {
     esp = (char**)esp - 1;
     *(char**)esp = NULL; // argv[argc] = NULL
 
-    int offset;
     // push pointers to the arguments onto the stack
     for (int i = argc - 1; i >= 0; i--) {
       esp = (char**)esp - 1;
-      offset = i > 0 ? argv[i] - argv[i - 1] : 0;
-      *(char**)esp = (char*)if_.esp + offset;
+      *(char**)esp = (char*)if_.esp + (argv[i] - argv[0]);
     }
 
     esp = (char**)esp - 1;
