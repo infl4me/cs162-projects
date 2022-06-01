@@ -18,6 +18,7 @@
     "thread.h": "c",
     "file.h": "c",
     "process.h": "c",
-    "pthread.h": "c"
+    "pthread.h": "c",
+    "palloc.h": "c"
   }
 }
