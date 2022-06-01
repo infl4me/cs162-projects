@@ -9,10 +9,10 @@
 #include "pagedir.h"
 
 static void syscall_handler(struct intr_frame*);
-bool are_args_valid(uint32_t* args, int num_args);
 bool is_sp_valid(uint32_t* sp);
 void exit_process(int status);
 void check_args(uint32_t* args, int num_args);
+bool is_addr_valid(uint32_t* addr);
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
@@ -21,20 +21,20 @@ void exit_process(int status) {
   process_exit();
 }
 
-bool are_args_valid(uint32_t* args, int num_args) {
-  return is_user_vaddr(&args[num_args]) &&
-         pagedir_get_page(thread_current()->pcb->pagedir, &args[num_args]) != NULL;
+bool is_addr_valid(uint32_t* addr) {
+  // check that addr in userspace and mapped to page (prbly there is better way to check that addr is mapped)
+  return is_user_vaddr(addr) && pagedir_get_page(thread_current()->pcb->pagedir, addr) != NULL;
 }
 
 void check_args(uint32_t* args, int num_args) {
-  if (!are_args_valid(args, num_args)) {
+  if (!is_addr_valid(&args[num_args])) {
     exit_process(-1);
   }
 }
 
 bool is_sp_valid(uint32_t* sp) {
-  return is_user_vaddr(sp) && pagedir_get_page(thread_current()->pcb->pagedir, sp) != NULL &&
-         ((PGSIZE - pg_ofs(sp)) >= sizeof(uint32_t*));
+  // check that sp aligned and doesnt spans to another page, probably there is better way to do that
+  return is_addr_valid(sp) && ((PGSIZE - pg_ofs(sp)) >= sizeof(uint32_t*));
 }
 
 static void syscall_handler(struct intr_frame* f) {
