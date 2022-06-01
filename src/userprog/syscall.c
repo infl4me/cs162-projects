@@ -12,6 +12,7 @@ static void syscall_handler(struct intr_frame*);
 bool are_args_valid(uint32_t* args, int num_args);
 bool is_sp_valid(uint32_t* sp);
 void exit_process(int status);
+void check_args(uint32_t* args, int num_args);
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
@@ -23,6 +24,12 @@ void exit_process(int status) {
 bool are_args_valid(uint32_t* args, int num_args) {
   return is_user_vaddr(&args[num_args]) &&
          pagedir_get_page(thread_current()->pcb->pagedir, &args[num_args]) != NULL;
+}
+
+void check_args(uint32_t* args, int num_args) {
+  if (!are_args_valid(args, num_args)) {
+    exit_process(-1);
+  }
 }
 
 bool is_sp_valid(uint32_t* sp) {
@@ -48,16 +55,18 @@ static void syscall_handler(struct intr_frame* f) {
 
   switch (args[0]) {
     case SYS_PRACTICE:
+      check_args(args, 1);
+
       f->eax = args[1] + 1;
       break;
     case SYS_EXIT:
-      are_args_valid(args, 1);
+      check_args(args, 1);
 
       f->eax = args[1];
       exit_process(args[1]);
       break;
     case SYS_WRITE:
-      are_args_valid(args, 3);
+      check_args(args, 3);
 
       if (args[1] == STDOUT_FILENO) {
         // if write target is stdout, redirect it to kernel console
