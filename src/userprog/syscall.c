@@ -7,6 +7,7 @@
 #include "filesys/file.h"
 #include "threads/vaddr.h"
 #include "pagedir.h"
+#include "devices/shutdown.h"
 
 static void syscall_handler(struct intr_frame*);
 bool is_sp_valid(uint32_t* sp);
@@ -64,6 +65,9 @@ static void syscall_handler(struct intr_frame* f) {
 
       f->eax = args[1];
       exit_process(args[1]);
+      break;
+    case SYS_HALT:
+      shutdown_power_off();
       break;
     case SYS_WRITE:
       check_args(args, 3);
