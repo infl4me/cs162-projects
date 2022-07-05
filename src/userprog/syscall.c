@@ -68,6 +68,15 @@ static void syscall_handler(struct intr_frame* f) {
       break;
     case SYS_HALT:
       shutdown_power_off();
+    case SYS_EXEC:
+      check_args(args, 1);
+
+      f->eax = process_execute((char*)args[1]);
+      break;
+    case SYS_WAIT:
+      check_args(args, 1);
+
+      f->eax = process_wait(args[1]);
       break;
     case SYS_WRITE:
       check_args(args, 3);

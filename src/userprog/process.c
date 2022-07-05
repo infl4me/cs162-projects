@@ -20,7 +20,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore temporary;
+static struct semaphore mainsema;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
@@ -46,6 +46,13 @@ void userprog_init(void) {
   ASSERT(success);
 }
 
+struct start_process_args {
+  char* command;
+  pid_t parent_pid;
+  struct semaphore exec_wait; // semaphore for waiting of successful process execution
+  bool exec_failed;
+};
+
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -54,7 +61,13 @@ pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
 
-  sema_init(&temporary, 0);
+  int is_main = thread_current()->tid == 1;
+  if (is_main) {
+    sema_init(&mainsema, 0);
+  } else {
+    sema_init(&thread_current()->pcb->exit_wait, 0);
+  }
+
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page(0);
@@ -62,8 +75,13 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  struct start_process_args* start_process_args = malloc(sizeof(struct start_process_args));
+  start_process_args->command = fn_copy;
+  start_process_args->parent_pid = thread_current()->tid;
+  start_process_args->exec_failed = 0;
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(file_name, PRI_DEFAULT, start_process, start_process_args);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   return tid;
@@ -71,8 +89,8 @@ pid_t process_execute(const char* file_name) {
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void* command_) {
-  char* command = (char*)command_;
+static void start_process(void* args_) {
+  struct start_process_args* args = (struct start_process_args*)args_;
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
@@ -90,7 +108,7 @@ static void start_process(void* command_) {
   // break command into controllable array of pointers
   if (success) {
     char* save_ptr;
-    char* token = strtok_r(command, " ", &save_ptr);
+    char* token = strtok_r(args->command, " ", &save_ptr);
 
     for (argc = 0; argc < max_argc && token != NULL; argc++) {
       argv[argc] = token;
@@ -131,8 +149,8 @@ static void start_process(void* command_) {
   */
   if (success) {
     if_.esp -= (command_total_length + (16 - command_total_length % 16)) +
-               (16 - (sizeof(char*) * (argc - 1) % 16)); // align stack to 16-byte
-    memcpy(if_.esp, command, command_total_length);      // copy arguments onto the stack
+               (16 - (sizeof(char*) * (argc - 1) % 16));  // align stack to 16-byte
+    memcpy(if_.esp, args->command, command_total_length); // copy arguments onto the stack
 
     void* esp = if_.esp; // if_.esp now is the base where the arguments start
 
@@ -168,9 +186,20 @@ static void start_process(void* command_) {
   }
 
   /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(command_);
+  palloc_free_page(args->command);
+
+  int is_main = args->parent_pid == 1;
+  t->pcb->parent_pid = args->parent_pid;
+
   if (!success) {
-    sema_up(&temporary);
+    if (is_main) {
+      sema_up(&mainsema);
+    } else {
+      struct thread* parent_tcb = find_thread(args->parent_pid);
+      if (parent_tcb) {
+        sema_up(&parent_tcb->pcb->exit_wait);
+      }
+    }
     thread_exit();
   }
 
@@ -194,7 +223,12 @@ static void start_process(void* command_) {
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int process_wait(pid_t child_pid UNUSED) {
-  sema_down(&temporary);
+  int is_main = thread_current()->tid == 1;
+  if (is_main) {
+    sema_down(&mainsema);
+  } else {
+    sema_down(&thread_current()->pcb->exit_wait);
+  }
   return 0;
 }
 
@@ -225,6 +259,16 @@ void process_exit(void) {
     pagedir_destroy(pd);
   }
 
+  int is_main = thread_current()->pcb->parent_pid == 1;
+  if (is_main) {
+    sema_up(&mainsema);
+  } else {
+    struct thread* parent_tcb = find_thread(thread_current()->pcb->parent_pid);
+    if (parent_tcb) {
+      sema_up(&parent_tcb->pcb->exit_wait);
+    }
+  }
+
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
@@ -233,7 +277,6 @@ void process_exit(void) {
   cur->pcb = NULL;
   free(pcb_to_free);
 
-  sema_up(&temporary);
   thread_exit();
 }
 
