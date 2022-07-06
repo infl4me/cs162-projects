@@ -19,7 +19,7 @@ void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "
 
 void exit_process(int status) {
   printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
-  process_exit();
+  process_exit(status);
 }
 
 bool is_addr_valid(uint32_t* addr) {
@@ -63,7 +63,6 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_EXIT:
       check_args(args, 1);
 
-      f->eax = args[1];
       exit_process(args[1]);
       break;
     case SYS_HALT:

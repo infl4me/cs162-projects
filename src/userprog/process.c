@@ -223,17 +223,20 @@ static void start_process(void* args_) {
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int process_wait(pid_t child_pid UNUSED) {
-  int is_main = thread_current()->tid == 1;
+  struct thread* tcb = thread_current();
+
+  int is_main = tcb->tid == 1;
   if (is_main) {
     sema_down(&mainsema);
   } else {
-    sema_down(&thread_current()->pcb->exit_wait);
+    sema_down(&tcb->pcb->exit_wait);
   }
-  return 0;
+
+  return tcb->pcb->exit_status;
 }
 
 /* Free the current process's resources. */
-void process_exit(void) {
+void process_exit(int status) {
   struct thread* cur = thread_current();
   uint32_t* pd;
 
@@ -265,6 +268,7 @@ void process_exit(void) {
   } else {
     struct thread* parent_tcb = find_thread(thread_current()->pcb->parent_pid);
     if (parent_tcb) {
+      parent_tcb->pcb->exit_status = status;
       sema_up(&parent_tcb->pcb->exit_wait);
     }
   }
