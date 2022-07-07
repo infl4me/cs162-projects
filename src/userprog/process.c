@@ -285,7 +285,7 @@ int process_wait(pid_t child_pid) {
 
     sema_down(&process_child->exit_wait);
 
-    exit_status = tcb->pcb->exit_status;
+    exit_status = process_child->exit_status;
     list_remove(&process_child->childelem);
     free(process_child);
   }
@@ -326,9 +326,9 @@ void process_exit(int status) {
   } else {
     struct thread* parent_tcb = find_thread(cur->pcb->parent_pid);
     if (parent_tcb) {
-      parent_tcb->pcb->exit_status = status;
       struct process_child* process_child = find_child(parent_tcb, cur->tid);
       if (process_child) {
+        process_child->exit_status = status;
         sema_up(&process_child->exit_wait);
       }
     }

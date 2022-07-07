@@ -29,8 +29,6 @@ struct process {
   struct thread* main_thread; /* Pointer to main thread */
   pid_t parent_pid;
   struct list children;
-  // struct semaphore exit_wait;
-  int exit_status;
 };
 
 struct process_child {
