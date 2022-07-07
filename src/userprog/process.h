@@ -28,12 +28,12 @@ struct process {
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
   pid_t parent_pid;
-  struct list children;
 };
 
 struct process_child {
   struct list_elem childelem;
-  pid_t pid;                  // child pid
+  pid_t parent_pid;
+  pid_t child_pid;
   int exit_status;            // exit status of child
   struct semaphore exit_wait; // semaphore of waiting exit of child
 };
@@ -52,6 +52,6 @@ tid_t pthread_execute(stub_fun, pthread_fun, void*);
 tid_t pthread_join(tid_t);
 void pthread_exit(void);
 void pthread_exit_main(void);
-struct process_child* find_child(struct thread* tcb, pid_t child_pid);
+struct process_child* find_child(pid_t parent_pid, pid_t child_pid);
 
 #endif /* userprog/process.h */
