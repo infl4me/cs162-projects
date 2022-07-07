@@ -20,7 +20,6 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore mainsema;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
@@ -41,6 +40,9 @@ void userprog_init(void) {
      can come at any time and activate our pagedir */
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
+
+  t->pcb->parent_pid = 0;
+  list_init(&t->pcb->children);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -68,11 +70,6 @@ pid_t process_execute(const char* file_name) {
   tid_t tid;
   struct thread* t = thread_current();
   struct process_child* process_child;
-
-  int is_main = t->tid == 1;
-  if (is_main) {
-    sema_init(&mainsema, 0);
-  }
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -105,19 +102,17 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   }
 
-  if (!is_main) {
-    process_child = malloc(sizeof(struct process_child));
-    if (process_child == NULL) {
-      palloc_free_page(fn_copy);
-      free(start_process_args);
-      return TID_ERROR;
-    }
-
-    process_child->pid = tid;
-    process_child->exit_status = 0;
-    sema_init(&process_child->exit_wait, 0);
-    list_push_back(&t->pcb->children, &process_child->childelem);
+  process_child = malloc(sizeof(struct process_child));
+  if (process_child == NULL) {
+    palloc_free_page(fn_copy);
+    free(start_process_args);
+    return TID_ERROR;
   }
+
+  process_child->pid = tid;
+  process_child->exit_status = 0;
+  sema_init(&process_child->exit_wait, 0);
+  list_push_back(&t->pcb->children, &process_child->childelem);
 
   sema_up(&start_process_args->process_exec_wait);
 
@@ -274,21 +269,16 @@ int process_wait(pid_t child_pid) {
   struct thread* tcb = thread_current();
   int exit_status;
 
-  int is_main = tcb->tid == 1;
-  if (is_main) {
-    sema_down(&mainsema);
-  } else {
-    struct process_child* process_child = find_child(tcb, child_pid);
-    if (!process_child) {
-      return -1;
-    }
-
-    sema_down(&process_child->exit_wait);
-
-    exit_status = process_child->exit_status;
-    list_remove(&process_child->childelem);
-    free(process_child);
+  struct process_child* process_child = find_child(tcb, child_pid);
+  if (!process_child) {
+    return -1;
   }
+
+  sema_down(&process_child->exit_wait);
+
+  exit_status = process_child->exit_status;
+  list_remove(&process_child->childelem);
+  free(process_child);
 
   return exit_status;
 }
@@ -320,17 +310,12 @@ void process_exit(int status) {
     pagedir_destroy(pd);
   }
 
-  int is_main = cur->pcb->parent_pid == 1;
-  if (is_main) {
-    sema_up(&mainsema);
-  } else {
-    struct thread* parent_tcb = find_thread(cur->pcb->parent_pid);
-    if (parent_tcb) {
-      struct process_child* process_child = find_child(parent_tcb, cur->tid);
-      if (process_child) {
-        process_child->exit_status = status;
-        sema_up(&process_child->exit_wait);
-      }
+  struct thread* parent_tcb = find_thread(cur->pcb->parent_pid);
+  if (parent_tcb) {
+    struct process_child* process_child = find_child(parent_tcb, cur->tid);
+    if (process_child) {
+      process_child->exit_status = status;
+      sema_up(&process_child->exit_wait);
     }
   }
 
