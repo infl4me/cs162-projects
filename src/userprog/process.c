@@ -49,8 +49,14 @@ void userprog_init(void) {
 struct start_process_args {
   char* command;
   pid_t parent_pid;
-  struct semaphore exec_wait; // semaphore for waiting of successful process execution
-  bool exec_failed;
+  bool exec_success;
+
+  // semaphore to wait until start_process to finish setting up new process
+  // so process_execute can do its housekeeping until process actually starts running
+  // this way new process won't exit until process_execute is done
+  struct semaphore process_set_wait;
+  // semaphore to wait until process_execute to finish housekeeping
+  struct semaphore process_exec_wait;
 };
 
 /* Starts a new thread running a user program loaded from
@@ -60,12 +66,12 @@ struct start_process_args {
 pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
+  struct thread* t = thread_current();
+  struct process_child* process_child;
 
-  int is_main = thread_current()->tid == 1;
+  int is_main = t->tid == 1;
   if (is_main) {
     sema_init(&mainsema, 0);
-  } else {
-    sema_init(&thread_current()->pcb->exit_wait, 0);
   }
 
   /* Make a copy of FILE_NAME.
@@ -77,13 +83,47 @@ pid_t process_execute(const char* file_name) {
 
   struct start_process_args* start_process_args = malloc(sizeof(struct start_process_args));
   start_process_args->command = fn_copy;
-  start_process_args->parent_pid = thread_current()->tid;
-  start_process_args->exec_failed = 0;
+  start_process_args->parent_pid = t->tid;
+  start_process_args->exec_success = 0;
+  sema_init(&start_process_args->process_set_wait, 0);
+  sema_init(&start_process_args->process_exec_wait, 0);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create(file_name, PRI_DEFAULT, start_process, start_process_args);
-  if (tid == TID_ERROR)
+
+  if (tid == TID_ERROR) {
     palloc_free_page(fn_copy);
+    free(start_process_args);
+    return TID_ERROR;
+  }
+
+  sema_down(&start_process_args->process_set_wait);
+
+  if (!start_process_args->exec_success) {
+    palloc_free_page(fn_copy);
+    free(start_process_args);
+    return TID_ERROR;
+  }
+
+  if (!is_main) {
+    process_child = malloc(sizeof(struct process_child));
+    if (process_child == NULL) {
+      palloc_free_page(fn_copy);
+      free(start_process_args);
+      return TID_ERROR;
+    }
+
+    process_child->pid = tid;
+    process_child->exit_status = 0;
+    sema_init(&process_child->exit_wait, 0);
+    list_push_back(&t->pcb->children, &process_child->childelem);
+  }
+
+  sema_up(&start_process_args->process_exec_wait);
+
+  palloc_free_page(fn_copy);
+  free(start_process_args);
+
   return tid;
 }
 
@@ -133,6 +173,11 @@ static void start_process(void* args_) {
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, argv[0], file_name_length);
+  }
+
+  if (success) {
+    new_pcb->parent_pid = args->parent_pid;
+    list_init(&new_pcb->children);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -185,21 +230,11 @@ static void start_process(void* args_) {
     free(pcb_to_free);
   }
 
-  /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(args->command);
-
-  int is_main = args->parent_pid == 1;
-  t->pcb->parent_pid = args->parent_pid;
+  args->exec_success = success;
+  sema_up(&args->process_set_wait);
+  sema_down(&args->process_exec_wait);
 
   if (!success) {
-    if (is_main) {
-      sema_up(&mainsema);
-    } else {
-      struct thread* parent_tcb = find_thread(args->parent_pid);
-      if (parent_tcb) {
-        sema_up(&parent_tcb->pcb->exit_wait);
-      }
-    }
     thread_exit();
   }
 
@@ -213,6 +248,19 @@ static void start_process(void* args_) {
   NOT_REACHED();
 }
 
+struct process_child* find_child(struct thread* tcb, pid_t child_pid) {
+  struct list_elem* e;
+
+  for (e = list_begin(&tcb->pcb->children); e != list_end(&tcb->pcb->children); e = list_next(e)) {
+    struct process_child* process_child = list_entry(e, struct process_child, childelem);
+    if (process_child->pid == child_pid) {
+      return process_child;
+    }
+  }
+
+  return NULL;
+}
+
 /* Waits for process with PID child_pid to die and returns its exit status.
    If it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If child_pid is invalid or if it was not a
@@ -222,17 +270,27 @@ static void start_process(void* args_) {
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
-int process_wait(pid_t child_pid UNUSED) {
+int process_wait(pid_t child_pid) {
   struct thread* tcb = thread_current();
+  int exit_status;
 
   int is_main = tcb->tid == 1;
   if (is_main) {
     sema_down(&mainsema);
   } else {
-    sema_down(&tcb->pcb->exit_wait);
+    struct process_child* process_child = find_child(tcb, child_pid);
+    if (!process_child) {
+      return -1;
+    }
+
+    sema_down(&process_child->exit_wait);
+
+    exit_status = tcb->pcb->exit_status;
+    list_remove(&process_child->childelem);
+    free(process_child);
   }
 
-  return tcb->pcb->exit_status;
+  return exit_status;
 }
 
 /* Free the current process's resources. */
@@ -262,14 +320,17 @@ void process_exit(int status) {
     pagedir_destroy(pd);
   }
 
-  int is_main = thread_current()->pcb->parent_pid == 1;
+  int is_main = cur->pcb->parent_pid == 1;
   if (is_main) {
     sema_up(&mainsema);
   } else {
-    struct thread* parent_tcb = find_thread(thread_current()->pcb->parent_pid);
+    struct thread* parent_tcb = find_thread(cur->pcb->parent_pid);
     if (parent_tcb) {
       parent_tcb->pcb->exit_status = status;
-      sema_up(&parent_tcb->pcb->exit_wait);
+      struct process_child* process_child = find_child(parent_tcb, cur->tid);
+      if (process_child) {
+        sema_up(&process_child->exit_wait);
+      }
     }
   }
 
