@@ -323,7 +323,7 @@ void process_exit(int status) {
   }
 
   // parent process POV
-  // if parents exits than we need to clear all process_child, since they are no longer needed
+  // if parent exits than we need to clear all process_child, since they are no longer needed
   {
     lock_acquire(&all_children_list_lock);
     struct list_elem* e;
