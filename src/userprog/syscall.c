@@ -10,10 +10,11 @@
 #include "devices/shutdown.h"
 
 static void syscall_handler(struct intr_frame*);
-bool is_sp_valid(uint32_t* sp);
+bool is_pointer_valid(uint32_t* sp);
 void exit_process(int status);
 void check_args(uint32_t* args, int num_args);
 bool is_addr_valid(uint32_t* addr);
+bool is_char_pointer_valid(uint32_t* p);
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
@@ -28,20 +29,37 @@ bool is_addr_valid(uint32_t* addr) {
 }
 
 void check_args(uint32_t* args, int num_args) {
+  // cant use is_pointer_valid here, since simple args can hang over into another page as opposed to pointer arg
   if (!is_addr_valid(&args[num_args])) {
     exit_process(-1);
   }
 }
 
-bool is_sp_valid(uint32_t* sp) {
-  // check that sp aligned and doesnt spans to another page, probably there is better way to do that
-  return is_addr_valid(sp) && ((PGSIZE - pg_ofs(sp)) >= sizeof(uint32_t*));
+bool is_pointer_valid(uint32_t* p) {
+  // check that p aligned and doesnt spans to another page, probably there is better way to do that
+  return is_addr_valid(p) && ((PGSIZE - pg_ofs(p)) >= sizeof(uint32_t*));
+}
+
+bool is_char_pointer_valid(uint32_t* p) {
+  if (!is_pointer_valid((uint32_t*)*p)) {
+    return false;
+  }
+
+  int max_length = PGSIZE - pg_ofs((char*)(*p));
+
+  for (int i = 0; i < max_length; i++) {
+    if (p[i] == '\0') {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 static void syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
 
-  if (!is_sp_valid(args)) {
+  if (!is_pointer_valid(args)) {
     exit_process(-1);
   }
 
@@ -69,6 +87,14 @@ static void syscall_handler(struct intr_frame* f) {
       shutdown_power_off();
     case SYS_EXEC:
       check_args(args, 1);
+
+      if (!is_pointer_valid(&args[1])) {
+        exit_process(-1);
+      }
+
+      if (!is_char_pointer_valid(&args[1])) {
+        exit_process(-1);
+      }
 
       f->eax = process_execute((char*)args[1]);
       break;
