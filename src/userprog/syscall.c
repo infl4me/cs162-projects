@@ -8,6 +8,9 @@
 #include "threads/vaddr.h"
 #include "pagedir.h"
 #include "devices/shutdown.h"
+#include "filesys/directory.h"
+#include "filesys/filesys.h"
+#include "filesys/inode.h"
 
 static void syscall_handler(struct intr_frame*);
 bool is_pointer_valid(uint32_t* sp);
@@ -15,8 +18,14 @@ void exit_process(int status);
 void check_args(uint32_t* args, int num_args);
 bool is_addr_valid(uint32_t* addr);
 bool is_char_pointer_valid(uint32_t* p);
+void check_args_filesys(uint32_t* args, int num_args);
 
-void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
+static struct lock filesys_lock;
+
+void syscall_init(void) {
+  intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
+  lock_init(&filesys_lock);
+}
 
 void exit_process(int status) {
   printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
@@ -35,6 +44,14 @@ void check_args(uint32_t* args, int num_args) {
   }
 }
 
+void check_args_filesys(uint32_t* args, int num_args) {
+  // cant use is_pointer_valid here, since simple args can hang over into another page as opposed to pointer arg
+  if (!is_addr_valid(&args[num_args])) {
+    lock_release(&filesys_lock);
+    exit_process(-1);
+  }
+}
+
 bool is_pointer_valid(uint32_t* p) {
   // check that p aligned and doesnt spans to another page, probably there is better way to do that
   return is_addr_valid(p) && ((PGSIZE - pg_ofs(p)) >= sizeof(uint32_t*));
@@ -46,18 +63,21 @@ bool is_char_pointer_valid(uint32_t* p) {
   }
 
   int max_length = PGSIZE - pg_ofs((char*)(*p));
+  int i;
 
-  for (int i = 0; i < max_length; i++) {
+  for (i = 0; i < max_length; i++) {
     if (p[i] == '\0') {
       return true;
     }
   }
 
-  return false;
+  return is_char_pointer_valid(&p[i]);
 }
 
 static void syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
+  struct file* file;
+  struct process_file* process_file;
 
   if (!is_pointer_valid(args)) {
     exit_process(-1);
@@ -71,6 +91,11 @@ static void syscall_handler(struct intr_frame* f) {
    */
 
   // printf("System call number: %d\n", args[0]);
+
+  // this if checks wheter the syscall is filesys targeted
+  if (args[0] >= SYS_CREATE && args[0] <= SYS_CLOSE) {
+    lock_acquire(&filesys_lock);
+  }
 
   switch (args[0]) {
     case SYS_PRACTICE:
@@ -103,20 +128,136 @@ static void syscall_handler(struct intr_frame* f) {
 
       f->eax = process_wait(args[1]);
       break;
+
+    // FILESYS SYSCALLS
+    case SYS_CREATE:
+      check_args_filesys(args, 2);
+
+      if (!is_char_pointer_valid(&args[1])) {
+        lock_release(&filesys_lock);
+        exit_process(-1);
+      }
+
+      f->eax = filesys_create((char*)args[1], args[2]);
+
+      break;
+    case SYS_REMOVE:
+      check_args_filesys(args, 1);
+
+      if (!is_char_pointer_valid(&args[1])) {
+        lock_release(&filesys_lock);
+        exit_process(-1);
+      }
+
+      f->eax = filesys_remove((char*)args[1]);
+
+      break;
+    case SYS_OPEN:
+      check_args_filesys(args, 1);
+
+      if (!is_char_pointer_valid(&args[1])) {
+        lock_release(&filesys_lock);
+        exit_process(-1);
+      }
+
+      file = filesys_open((char*)args[1]);
+      if (file == NULL) {
+        f->eax = FD_ERROR;
+        lock_release(&filesys_lock);
+        return;
+      }
+
+      f->eax = register_process_file(file);
+
+      break;
+    case SYS_FILESIZE:
+      check_args_filesys(args, 1);
+
+      process_file = find_process_file(args[1]);
+
+      f->eax = process_file == NULL ? 0 : process_file->file->inode->data.length;
+
+      break;
+    case SYS_READ:
+      // TODO: add validation for buffer
+      // TODO: STDIN FILENO reads from the keyboard using the input getc function in devices/input.c
+      check_args_filesys(args, 3);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        f->eax = -1;
+        lock_release(&filesys_lock);
+        return;
+      }
+
+      f->eax = file_read(process_file->file, (void*)args[2], args[3]);
+
+      break;
     case SYS_WRITE:
-      check_args(args, 3);
+      check_args_filesys(args, 3);
 
       if (args[1] == STDOUT_FILENO) {
         // if write target is stdout, redirect it to kernel console
         putbuf((char*)args[2], args[3]);
         f->eax = args[3];
-      } else {
-        NOT_REACHED();
+        lock_release(&filesys_lock);
+        return;
       }
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        f->eax = 0;
+        lock_release(&filesys_lock);
+        return;
+      }
+
+      f->eax = file_write(process_file->file, (void*)args[2], args[3]);
+
+      break;
+    case SYS_SEEK:
+      check_args_filesys(args, 2);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        lock_release(&filesys_lock);
+        return;
+      }
+
+      file_seek(process_file->file, args[2]);
+
+      break;
+    case SYS_TELL:
+      check_args_filesys(args, 1);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        f->eax = 0;
+        lock_release(&filesys_lock);
+        return;
+      }
+
+      f->eax = file_tell(process_file->file);
+
+      break;
+    case SYS_CLOSE:
+      check_args_filesys(args, 1);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        lock_release(&filesys_lock);
+        return;
+      }
+
+      file_close(process_file->file);
+
       break;
 
     default:
       NOT_REACHED();
       break;
+  }
+
+  if (args[0] >= SYS_CREATE && args[0] <= SYS_CLOSE) {
+    lock_release(&filesys_lock);
   }
 }

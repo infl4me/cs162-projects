@@ -28,6 +28,7 @@ ifdef PROGS
 include ../../Makefile.userprog
 endif
 
+# TODO:
 TIMEOUT = 10
 
 clean::

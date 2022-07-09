@@ -28,6 +28,54 @@ static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
 
+/* Lock used by allocate_fd(). */
+static struct lock fd_lock;
+/* Returns a tid to use for a new thread. */
+fd allocate_fd(void) {
+  /* not starting from 0 or 1 to reserve them for special purposes
+  such as stdin/stdout descriptors */
+  static fd next_fd = 5;
+  fd fd;
+
+  lock_acquire(&fd_lock);
+  fd = next_fd++;
+  lock_release(&fd_lock);
+
+  return fd;
+}
+
+fd register_process_file(struct file* file) {
+  struct process_file* process_file = malloc(sizeof(struct process_file));
+  if (process_file == NULL) {
+    return FD_ERROR;
+  }
+
+  struct thread* t = thread_current();
+  fd fd = allocate_fd();
+
+  process_file->fd = fd;
+  process_file->file = file;
+
+  list_push_back(&t->pcb->process_files, &process_file->process_file_elem);
+
+  return fd;
+}
+
+struct process_file* find_process_file(fd fd) {
+  struct list_elem* e;
+  struct thread* thread = thread_current();
+
+  for (e = list_begin(&thread->pcb->process_files); e != list_end(&thread->pcb->process_files);
+       e = list_next(e)) {
+    struct process_file* process_file = list_entry(e, struct process_file, process_file_elem);
+    if (process_file->fd == fd) {
+      return process_file;
+    }
+  }
+
+  return NULL;
+}
+
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
    the first user process. Any additions to the PCB should be also
@@ -46,6 +94,7 @@ void userprog_init(void) {
 
   list_init(&all_children_list);
   lock_init(&all_children_list_lock);
+  lock_init(&fd_lock);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -116,7 +165,7 @@ pid_t process_execute(const char* file_name) {
   process_child->parent_pid = t->tid;
   process_child->exit_status = 0;
   sema_init(&process_child->exit_wait, 0);
-  list_push_back(&all_children_list, &process_child->childelem);
+  list_push_back(&all_children_list, &process_child->process_child_elem);
 
   sema_up(&start_process_args->process_exec_wait);
 
@@ -173,6 +222,7 @@ static void start_process(void* args_) {
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, argv[0], file_name_length);
     new_pcb->parent_pid = args->parent_pid;
+    list_init(&new_pcb->process_files);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -247,7 +297,7 @@ struct process_child* find_child(pid_t parent_pid, pid_t child_pid) {
   struct list_elem* e;
 
   for (e = list_begin(&all_children_list); e != list_end(&all_children_list); e = list_next(e)) {
-    struct process_child* process_child = list_entry(e, struct process_child, childelem);
+    struct process_child* process_child = list_entry(e, struct process_child, process_child_elem);
     if (process_child->parent_pid == parent_pid && process_child->child_pid == child_pid) {
       return process_child;
     }
@@ -277,7 +327,7 @@ int process_wait(pid_t child_pid) {
   sema_down(&process_child->exit_wait);
 
   exit_status = process_child->exit_status;
-  list_remove(&process_child->childelem);
+  list_remove(&process_child->process_child_elem);
   free(process_child);
 
   return exit_status;
@@ -328,9 +378,9 @@ void process_exit(int status) {
     lock_acquire(&all_children_list_lock);
     struct list_elem* e;
     for (e = list_begin(&all_children_list); e != list_end(&all_children_list); e = list_next(e)) {
-      struct process_child* process_child = list_entry(e, struct process_child, childelem);
+      struct process_child* process_child = list_entry(e, struct process_child, process_child_elem);
       if (process_child->parent_pid == cur->tid) {
-        list_remove(&process_child->childelem);
+        list_remove(&process_child->process_child_elem);
         free(process_child);
       }
     }

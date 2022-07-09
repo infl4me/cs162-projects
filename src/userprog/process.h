@@ -3,6 +3,7 @@
 
 #include "threads/thread.h"
 #include <stdint.h>
+#include "filesys/file.h"
 
 // At most 8MB can be allocated to the stack
 // These defines will be used in Project 2: Multithreading
@@ -12,6 +13,10 @@
 /* PIDs and TIDs are the same type. PID should be
    the TID of the main thread of the process */
 typedef tid_t pid_t;
+
+/* file descriptor */
+typedef int fd;
+#define FD_ERROR ((fd)-1) /* Error value for fd. */
 
 /* Thread functions (Project 2: Multithreading) */
 typedef void (*pthread_fun)(void*);
@@ -28,14 +33,21 @@ struct process {
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
   pid_t parent_pid;
+  struct list process_files;
 };
 
 struct process_child {
-  struct list_elem childelem;
+  struct list_elem process_child_elem;
   pid_t parent_pid;
   pid_t child_pid;
   int exit_status;            // exit status of child
   struct semaphore exit_wait; // semaphore of waiting exit of child
+};
+
+struct process_file {
+  struct list_elem process_file_elem;
+  fd fd;
+  struct file* file;
 };
 
 void userprog_init(void);
@@ -53,5 +65,8 @@ tid_t pthread_join(tid_t);
 void pthread_exit(void);
 void pthread_exit_main(void);
 struct process_child* find_child(pid_t parent_pid, pid_t child_pid);
+fd register_process_file(struct file* file);
+fd allocate_fd(void);
+struct process_file* find_process_file(fd fd);
 
 #endif /* userprog/process.h */
