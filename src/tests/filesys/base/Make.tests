@@ -16,4 +16,4 @@ tests/filesys/base/syn-read_PUTFILES = tests/filesys/base/child-syn-read
 tests/filesys/base/syn-write_PUTFILES = tests/filesys/base/child-syn-wrt
 
 # TODO:
-tests/filesys/base/syn-read.output: TIMEOUT = 10
+tests/filesys/base/syn-read.output: TIMEOUT = 45

@@ -76,6 +76,16 @@ struct process_file* find_process_file(fd fd) {
   return NULL;
 }
 
+bool remove_process_file(fd fd) {
+  struct process_file* process_file = find_process_file(fd);
+  if (process_file == NULL) {
+    return false;
+  }
+
+  list_remove(&process_file->process_file_elem);
+  return true;
+}
+
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
    the first user process. Any additions to the PCB should be also

@@ -71,6 +71,8 @@ bool is_char_pointer_valid(uint32_t* p) {
     }
   }
 
+  // at the moment we are at the boundary of two pages
+  // so, here, we recursively passing the start of second page to check
   return is_char_pointer_valid(&p[i]);
 }
 
@@ -179,9 +181,13 @@ static void syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_READ:
-      // TODO: add validation for buffer
       // TODO: STDIN FILENO reads from the keyboard using the input getc function in devices/input.c
       check_args_filesys(args, 3);
+
+      if (!is_pointer_valid((uint32_t*)args[2])) {
+        lock_release(&filesys_lock);
+        exit_process(-1);
+      }
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
@@ -195,6 +201,11 @@ static void syscall_handler(struct intr_frame* f) {
       break;
     case SYS_WRITE:
       check_args_filesys(args, 3);
+
+      if (!is_pointer_valid((uint32_t*)args[2])) {
+        lock_release(&filesys_lock);
+        exit_process(-1);
+      }
 
       if (args[1] == STDOUT_FILENO) {
         // if write target is stdout, redirect it to kernel console
@@ -249,6 +260,7 @@ static void syscall_handler(struct intr_frame* f) {
       }
 
       file_close(process_file->file);
+      remove_process_file(args[1]);
 
       break;
 

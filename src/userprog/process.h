@@ -68,5 +68,6 @@ struct process_child* find_child(pid_t parent_pid, pid_t child_pid);
 fd register_process_file(struct file* file);
 fd allocate_fd(void);
 struct process_file* find_process_file(fd fd);
+bool remove_process_file(fd fd);
 
 #endif /* userprog/process.h */
