@@ -180,7 +180,6 @@ pid_t process_execute(const char* file_name) {
   sema_up(&start_process_args->process_exec_wait);
 
   palloc_free_page(fn_copy);
-  free(start_process_args);
 
   return tid;
 }
@@ -289,6 +288,8 @@ static void start_process(void* args_) {
   sema_up(&args->process_set_wait);
   sema_down(&args->process_exec_wait);
 
+  free(args);
+
   if (!success) {
     thread_exit();
   }
@@ -386,6 +387,18 @@ void process_exit(int status) {
   // if parent exits than we need to clear all process_child, since they are no longer needed
   {
     lock_acquire(&all_children_list_lock);
+    struct list_elem *elem, *next;
+
+    for (elem = list_begin(&all_children_list); elem != list_end(&all_children_list); elem = next) {
+      next = list_next(elem);
+      struct process_child* process_child =
+          list_entry(elem, struct process_child, process_child_elem);
+      if (process_child->parent_pid == cur->tid) {
+        list_remove(elem);
+        free(process_child);
+      }
+    }
+
     struct list_elem* e;
     for (e = list_begin(&all_children_list); e != list_end(&all_children_list); e = list_next(e)) {
       struct process_child* process_child = list_entry(e, struct process_child, process_child_elem);
@@ -394,6 +407,7 @@ void process_exit(int status) {
         free(process_child);
       }
     }
+
     lock_release(&all_children_list_lock);
   }
 

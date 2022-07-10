@@ -20,15 +20,16 @@ bool is_addr_valid(uint32_t* addr);
 bool is_char_pointer_valid(uint32_t* p);
 void check_args_filesys(uint32_t* args, int num_args);
 
-static struct lock filesys_lock;
+static struct lock syscall_lock;
 
 void syscall_init(void) {
   intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
-  lock_init(&filesys_lock);
+  lock_init(&syscall_lock);
 }
 
 void exit_process(int status) {
   printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
+  lock_release(&syscall_lock);
   process_exit(status);
 }
 
@@ -47,7 +48,6 @@ void check_args(uint32_t* args, int num_args) {
 void check_args_filesys(uint32_t* args, int num_args) {
   // cant use is_pointer_valid here, since simple args can hang over into another page as opposed to pointer arg
   if (!is_addr_valid(&args[num_args])) {
-    lock_release(&filesys_lock);
     exit_process(-1);
   }
 }
@@ -81,6 +81,8 @@ static void syscall_handler(struct intr_frame* f) {
   struct file* file;
   struct process_file* process_file;
 
+  lock_acquire(&syscall_lock);
+
   if (!is_pointer_valid(args)) {
     exit_process(-1);
   }
@@ -94,11 +96,6 @@ static void syscall_handler(struct intr_frame* f) {
 
   // printf("System call number: %d\n", args[0]);
 
-  // this if checks wheter the syscall is filesys targeted
-  if (args[0] >= SYS_CREATE && args[0] <= SYS_CLOSE) {
-    lock_acquire(&filesys_lock);
-  }
-
   switch (args[0]) {
     case SYS_PRACTICE:
       check_args(args, 1);
@@ -111,6 +108,7 @@ static void syscall_handler(struct intr_frame* f) {
       exit_process(args[1]);
       break;
     case SYS_HALT:
+      lock_release(&syscall_lock);
       shutdown_power_off();
     case SYS_EXEC:
       check_args(args, 1);
@@ -127,8 +125,9 @@ static void syscall_handler(struct intr_frame* f) {
       break;
     case SYS_WAIT:
       check_args(args, 1);
-
+      lock_release(&syscall_lock);
       f->eax = process_wait(args[1]);
+      lock_acquire(&syscall_lock);
       break;
 
     // FILESYS SYSCALLS
@@ -136,7 +135,6 @@ static void syscall_handler(struct intr_frame* f) {
       check_args_filesys(args, 2);
 
       if (!is_char_pointer_valid(&args[1])) {
-        lock_release(&filesys_lock);
         exit_process(-1);
       }
 
@@ -147,7 +145,6 @@ static void syscall_handler(struct intr_frame* f) {
       check_args_filesys(args, 1);
 
       if (!is_char_pointer_valid(&args[1])) {
-        lock_release(&filesys_lock);
         exit_process(-1);
       }
 
@@ -158,14 +155,13 @@ static void syscall_handler(struct intr_frame* f) {
       check_args_filesys(args, 1);
 
       if (!is_char_pointer_valid(&args[1])) {
-        lock_release(&filesys_lock);
         exit_process(-1);
       }
 
       file = filesys_open((char*)args[1]);
       if (file == NULL) {
         f->eax = FD_ERROR;
-        lock_release(&filesys_lock);
+        lock_release(&syscall_lock);
         return;
       }
 
@@ -181,18 +177,22 @@ static void syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_READ:
-      // TODO: STDIN FILENO reads from the keyboard using the input getc function in devices/input.c
       check_args_filesys(args, 3);
 
       if (!is_pointer_valid((uint32_t*)args[2])) {
-        lock_release(&filesys_lock);
         exit_process(-1);
+      }
+
+      // TODO: STDIN FILENO reads from the keyboard using the input getc function in devices/input.c
+      if (args[1] == STDIN_FILENO) {
+        printf("LOL\n");
+        NOT_REACHED();
       }
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
         f->eax = -1;
-        lock_release(&filesys_lock);
+        lock_release(&syscall_lock);
         return;
       }
 
@@ -203,7 +203,6 @@ static void syscall_handler(struct intr_frame* f) {
       check_args_filesys(args, 3);
 
       if (!is_pointer_valid((uint32_t*)args[2])) {
-        lock_release(&filesys_lock);
         exit_process(-1);
       }
 
@@ -211,14 +210,14 @@ static void syscall_handler(struct intr_frame* f) {
         // if write target is stdout, redirect it to kernel console
         putbuf((char*)args[2], args[3]);
         f->eax = args[3];
-        lock_release(&filesys_lock);
+        lock_release(&syscall_lock);
         return;
       }
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
         f->eax = 0;
-        lock_release(&filesys_lock);
+        lock_release(&syscall_lock);
         return;
       }
 
@@ -230,7 +229,7 @@ static void syscall_handler(struct intr_frame* f) {
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
-        lock_release(&filesys_lock);
+        lock_release(&syscall_lock);
         return;
       }
 
@@ -243,7 +242,7 @@ static void syscall_handler(struct intr_frame* f) {
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
         f->eax = 0;
-        lock_release(&filesys_lock);
+        lock_release(&syscall_lock);
         return;
       }
 
@@ -255,7 +254,7 @@ static void syscall_handler(struct intr_frame* f) {
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
-        lock_release(&filesys_lock);
+        lock_release(&syscall_lock);
         return;
       }
 
@@ -269,7 +268,5 @@ static void syscall_handler(struct intr_frame* f) {
       break;
   }
 
-  if (args[0] >= SYS_CREATE && args[0] <= SYS_CLOSE) {
-    lock_release(&filesys_lock);
-  }
+  lock_release(&syscall_lock);
 }
