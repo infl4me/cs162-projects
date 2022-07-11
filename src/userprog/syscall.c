@@ -5,12 +5,11 @@
 #include "threads/thread.h"
 #include "userprog/process.h"
 #include "filesys/file.h"
+#include "filesys/filesys.h"
 #include "threads/vaddr.h"
 #include "pagedir.h"
 #include "devices/shutdown.h"
-#include "filesys/directory.h"
-#include "filesys/filesys.h"
-#include "filesys/inode.h"
+#include "devices/input.h"
 
 static void syscall_handler(struct intr_frame*);
 bool is_pointer_valid(uint32_t* sp);
@@ -173,7 +172,7 @@ static void syscall_handler(struct intr_frame* f) {
 
       process_file = find_process_file(args[1]);
 
-      f->eax = process_file == NULL ? 0 : process_file->file->inode->data.length;
+      f->eax = process_file == NULL ? 0 : file_length(process_file->file);
 
       break;
     case SYS_READ:
@@ -183,10 +182,25 @@ static void syscall_handler(struct intr_frame* f) {
         exit_process(-1);
       }
 
-      // TODO: STDIN FILENO reads from the keyboard using the input getc function in devices/input.c
       if (args[1] == STDIN_FILENO) {
-        printf("LOL\n");
-        NOT_REACHED();
+        lock_release(&syscall_lock);
+
+        uint8_t* buffer = (uint8_t*)args[2];
+        int c;
+
+        for (uint32_t i = 0; i < args[3]; i++) {
+          c = input_getc();
+          if (c == '\n') {
+            f->eax = i;
+            return;
+          } else {
+            buffer[i] = input_getc();
+          }
+        }
+
+        f->eax = args[3];
+
+        return;
       }
 
       process_file = find_process_file(args[1]);

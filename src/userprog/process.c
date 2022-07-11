@@ -19,7 +19,6 @@
 #include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
-#include "filesys/inode.h"
 
 static struct list all_children_list;
 static struct lock all_children_list_lock;
