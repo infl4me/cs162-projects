@@ -34,6 +34,7 @@ struct process {
   struct thread* main_thread; /* Pointer to main thread */
   pid_t parent_pid;
   struct list process_files;
+  struct file* exec_file; // pointer to process executable file
 };
 
 struct process_child {
