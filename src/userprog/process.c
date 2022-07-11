@@ -400,19 +400,24 @@ void process_exit(int status) {
       }
     }
 
-    struct list_elem* e;
-    for (e = list_begin(&all_children_list); e != list_end(&all_children_list); e = list_next(e)) {
-      struct process_child* process_child = list_entry(e, struct process_child, process_child_elem);
-      if (process_child->parent_pid == cur->tid) {
-        list_remove(&process_child->process_child_elem);
-        free(process_child);
-      }
-    }
-
     lock_release(&all_children_list_lock);
   }
 
   file_close(cur->pcb->exec_file);
+
+  // free process file descriptors
+  {
+    struct list_elem *elem, *next;
+    for (elem = list_begin(&cur->pcb->process_files); elem != list_end(&cur->pcb->process_files);
+         elem = next) {
+      next = list_next(elem);
+      struct process_file* process_file = list_entry(elem, struct process_file, process_file_elem);
+
+      list_remove(&process_file->process_file_elem);
+      file_close(process_file->file);
+      free(process_file);
+    }
+  }
 
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
