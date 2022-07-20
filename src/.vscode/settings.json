@@ -22,6 +22,8 @@
     "palloc.h": "c",
     "malloc.h": "c",
     "stdbool.h": "c",
-    "*.inc": "c"
+    "*.inc": "c",
+    "float.h": "c",
+    "stdint.h": "c"
   }
 }
