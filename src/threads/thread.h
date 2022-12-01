@@ -15,6 +15,11 @@ enum thread_status {
   THREAD_DYING    /* About to be destroyed. */
 };
 
+enum thread_queue_type {
+  THREAD_QUEUE_READY, /* Queue for ready threads */
+  THREAD_QUEUE_SLEEPING,   /* Queue for threads that were put to sleep with timer */
+};
+
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
@@ -136,6 +141,7 @@ const char* thread_name(void);
 
 void thread_exit(void) NO_RETURN;
 void thread_yield(void);
+void thread_yield_with_queue_type(enum thread_queue_type);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func(struct thread* t, void* aux);

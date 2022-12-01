@@ -24,6 +24,9 @@
    that are ready to run but not actually running. */
 static struct list fifo_ready_list;
 
+/* List of processes that were put to sleep via timer_sleep */
+static struct list fifo_sleeping_list;
+
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
@@ -57,7 +60,7 @@ static void init_thread(struct thread*, const char* name, int priority);
 static bool is_thread(struct thread*) UNUSED;
 static void* alloc_frame(struct thread*, size_t size);
 static void schedule(void);
-static void thread_enqueue(struct thread* t);
+static void thread_enqueue(struct thread* t, enum thread_queue_type);
 static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
 
@@ -108,6 +111,7 @@ void thread_init(void) {
 
   lock_init(&tid_lock);
   list_init(&fifo_ready_list);
+  list_init(&fifo_sleeping_list);
   list_init(&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -226,16 +230,28 @@ void thread_block(void) {
   schedule();
 }
 
+static struct list* get_thread_queue(enum thread_queue_type thread_queue_type) {
+  switch (thread_queue_type) {
+    case THREAD_QUEUE_READY:
+      return &fifo_ready_list;
+    case THREAD_QUEUE_SLEEPING:
+      return &fifo_sleeping_list;
+
+    default:
+      PANIC("Unimplemented thread queue type: %d", thread_queue_type);
+  }
+}
+
 /* Places a thread on the ready structure appropriate for the
    current active scheduling policy.
    
    This function must be called with interrupts turned off. */
-static void thread_enqueue(struct thread* t) {
+static void thread_enqueue(struct thread* t, enum thread_queue_type thread_queue_type) {
   ASSERT(intr_get_level() == INTR_OFF);
   ASSERT(is_thread(t));
 
   if (active_sched_policy == SCHED_FIFO)
-    list_push_back(&fifo_ready_list, &t->elem);
+    list_push_back(get_thread_queue(thread_queue_type), &t->elem);
   else
     PANIC("Unimplemented scheduling policy value: %d", active_sched_policy);
 }
@@ -255,7 +271,7 @@ void thread_unblock(struct thread* t) {
 
   old_level = intr_disable();
   ASSERT(t->status == THREAD_BLOCKED);
-  thread_enqueue(t);
+  thread_enqueue(t, THREAD_QUEUE_READY);
   t->status = THREAD_READY;
   intr_set_level(old_level);
 }
@@ -301,6 +317,10 @@ void thread_exit(void) {
 /* Yields the CPU.  The current thread is not put to sleep and
    may be scheduled again immediately at the scheduler's whim. */
 void thread_yield(void) {
+  thread_yield_with_queue_type(THREAD_QUEUE_READY);
+}
+
+void thread_yield_with_queue_type(enum thread_queue_type thread_queue_type) {
   struct thread* cur = thread_current();
   enum intr_level old_level;
 
@@ -308,7 +328,7 @@ void thread_yield(void) {
 
   old_level = intr_disable();
   if (cur != idle_thread)
-    thread_enqueue(cur);
+    thread_enqueue(cur, thread_queue_type);
   cur->status = THREAD_READY;
   schedule();
   intr_set_level(old_level);
@@ -449,8 +469,11 @@ static void* alloc_frame(struct thread* t, size_t size) {
 
 /* First-in first-out scheduler */
 static struct thread* thread_schedule_fifo(void) {
-  if (!list_empty(&fifo_ready_list))
+  if (!list_empty(&fifo_ready_list)) {
     return list_entry(list_pop_front(&fifo_ready_list), struct thread, elem);
+  }
+  else if (!list_empty(&fifo_sleeping_list))
+    return list_entry(list_pop_front(&fifo_sleeping_list), struct thread, elem);
   else
     return idle_thread;
 }
