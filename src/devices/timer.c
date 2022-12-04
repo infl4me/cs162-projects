@@ -80,7 +80,7 @@ void timer_sleep(int64_t ticks) {
 
   ASSERT(intr_get_level() == INTR_ON);
   while (timer_elapsed(start) < ticks)
-    thread_yield_with_queue_type(THREAD_QUEUE_SLEEPING);
+    thread_sleep();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be

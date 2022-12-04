@@ -17,6 +17,8 @@ enum thread_status {
 
 enum thread_queue_type {
   THREAD_QUEUE_READY, /* Queue for ready threads */
+  THREAD_QUEUE_READY_LP, /* Queue for ready low prio threads */
+  THREAD_QUEUE_READY_HP, /* Queue for ready high prio threads */
   THREAD_QUEUE_SLEEPING,   /* Queue for threads that were put to sleep with timer */
 };
 
@@ -141,7 +143,7 @@ const char* thread_name(void);
 
 void thread_exit(void) NO_RETURN;
 void thread_yield(void);
-void thread_yield_with_queue_type(enum thread_queue_type);
+void thread_sleep(void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func(struct thread* t, void* aux);

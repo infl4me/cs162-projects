@@ -24,6 +24,12 @@
    that are ready to run but not actually running. */
 static struct list fifo_ready_list;
 
+/* FIFO Low priority list */
+static struct list fifo_ready_lp_list;
+
+/* FIFO High priority list */
+static struct list fifo_ready_hp_list;
+
 /* List of processes that were put to sleep via timer_sleep */
 static struct list fifo_sleeping_list;
 
@@ -63,6 +69,9 @@ static void schedule(void);
 static void thread_enqueue(struct thread* t, enum thread_queue_type);
 static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
+void thread_yield_with_queue_type(enum thread_queue_type);
+static struct list* get_thread_queue(struct thread*, enum thread_queue_type);
+struct thread* extract_thread_by_priority(struct list*);
 
 static void kernel_thread(thread_func*, void* aux);
 static void idle(void* aux UNUSED);
@@ -111,6 +120,8 @@ void thread_init(void) {
 
   lock_init(&tid_lock);
   list_init(&fifo_ready_list);
+  list_init(&fifo_ready_lp_list);
+  list_init(&fifo_ready_hp_list);
   list_init(&fifo_sleeping_list);
   list_init(&all_list);
 
@@ -213,6 +224,10 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   /* Add to run queue. */
   thread_unblock(t);
 
+  if (priority > thread_current()->priority) {
+    thread_yield();
+  }
+
   return tid;
 }
 
@@ -230,10 +245,16 @@ void thread_block(void) {
   schedule();
 }
 
-static struct list* get_thread_queue(enum thread_queue_type thread_queue_type) {
+static struct list* get_thread_queue(struct thread* t, enum thread_queue_type thread_queue_type) {
   switch (thread_queue_type) {
     case THREAD_QUEUE_READY:
-      return &fifo_ready_list;
+      if (t->priority > PRI_DEFAULT) {
+        return &fifo_ready_hp_list;
+      } else if (t->priority < PRI_DEFAULT) {
+        return &fifo_ready_lp_list;
+      } else {
+        return &fifo_ready_list;
+      }
     case THREAD_QUEUE_SLEEPING:
       return &fifo_sleeping_list;
 
@@ -250,9 +271,11 @@ static void thread_enqueue(struct thread* t, enum thread_queue_type thread_queue
   ASSERT(intr_get_level() == INTR_OFF);
   ASSERT(is_thread(t));
 
-  if (active_sched_policy == SCHED_FIFO)
-    list_push_back(get_thread_queue(thread_queue_type), &t->elem);
-  else
+  if (active_sched_policy == SCHED_FIFO) {
+    list_push_back(get_thread_queue(t, thread_queue_type), &t->elem);
+  } else if (active_sched_policy == SCHED_PRIO) {
+    list_push_back(get_thread_queue(t, thread_queue_type), &t->elem);
+  } else
     PANIC("Unimplemented scheduling policy value: %d", active_sched_policy);
 }
 
@@ -316,9 +339,10 @@ void thread_exit(void) {
 
 /* Yields the CPU.  The current thread is not put to sleep and
    may be scheduled again immediately at the scheduler's whim. */
-void thread_yield(void) {
-  thread_yield_with_queue_type(THREAD_QUEUE_READY);
-}
+void thread_yield(void) { thread_yield_with_queue_type(THREAD_QUEUE_READY); }
+
+/* Same as thread_yield, but puts thread to sleeping queue which has lower prio than ready queue */
+void thread_sleep(void) { thread_yield_with_queue_type(THREAD_QUEUE_SLEEPING); }
 
 void thread_yield_with_queue_type(enum thread_queue_type thread_queue_type) {
   struct thread* cur = thread_current();
@@ -348,7 +372,14 @@ void thread_foreach(thread_action_func* func, void* aux) {
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
-void thread_set_priority(int new_priority) { thread_current()->priority = new_priority; }
+void thread_set_priority(int new_priority) { 
+  int old_priority = thread_current()->priority;
+  thread_current()->priority = new_priority;
+
+  if (new_priority < old_priority) {
+    thread_yield();
+  }
+}
 
 /* Returns the current thread's priority. */
 int thread_get_priority(void) { return thread_current()->priority; }
@@ -467,21 +498,50 @@ static void* alloc_frame(struct thread* t, size_t size) {
   return t->stack;
 }
 
+/*
+  Extracts a thread with the highest priority from given queue (fifo)
+*/
+struct thread* extract_thread_by_priority(struct list* queue) {
+  ASSERT(intr_get_level() == INTR_OFF);
+  ASSERT(!list_empty(queue));
+
+  struct list_elem* e;
+  struct thread* t;
+  struct list_elem* max_e;
+  struct thread* max_t;
+  int max_pri = PRI_MIN - 1;
+
+  for (e = list_begin(queue); e != list_end(queue); e = list_next(e)) {
+    t = list_entry(e, struct thread, elem);
+    if (t->priority > max_pri) {
+      max_t = t;
+      max_e = e;
+      max_pri = t->priority;
+    }
+  }
+
+  list_remove(max_e);
+
+  return max_t;
+}
+
 /* First-in first-out scheduler */
 static struct thread* thread_schedule_fifo(void) {
-  if (!list_empty(&fifo_ready_list)) {
+  if (!list_empty(&fifo_ready_hp_list)) {
+    return extract_thread_by_priority(&fifo_ready_hp_list);
+  } else if (!list_empty(&fifo_ready_list)) {
     return list_entry(list_pop_front(&fifo_ready_list), struct thread, elem);
-  }
-  else if (!list_empty(&fifo_sleeping_list))
+  } else if (!list_empty(&fifo_ready_lp_list)) {
+    return extract_thread_by_priority(&fifo_ready_lp_list);
+  } else if (!list_empty(&fifo_sleeping_list))
     return list_entry(list_pop_front(&fifo_sleeping_list), struct thread, elem);
   else
     return idle_thread;
 }
 
 /* Strict priority scheduler */
-static struct thread* thread_schedule_prio(void) {
-  PANIC("Unimplemented scheduler policy: \"-sched=prio\"");
-}
+// TODO: prbly need to change to smth else here
+static struct thread* thread_schedule_prio(void) { return thread_schedule_fifo(); }
 
 /* Fair priority scheduler */
 static struct thread* thread_schedule_fair(void) {
