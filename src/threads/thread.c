@@ -71,7 +71,6 @@ static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
 void thread_yield_with_queue_type(enum thread_queue_type);
 static struct list* get_thread_queue(struct thread*, enum thread_queue_type);
-struct thread* extract_thread_by_priority(struct list*);
 
 static void kernel_thread(thread_func*, void* aux);
 static void idle(void* aux UNUSED);
