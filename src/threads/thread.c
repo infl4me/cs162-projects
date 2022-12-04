@@ -533,7 +533,7 @@ static struct thread* thread_schedule_fifo(void) {
   } else if (!list_empty(&fifo_ready_lp_list)) {
     return extract_thread_by_priority(&fifo_ready_lp_list);
   } else if (!list_empty(&fifo_sleeping_list))
-    return list_entry(list_pop_front(&fifo_sleeping_list), struct thread, elem);
+    return extract_thread_by_priority(&fifo_sleeping_list);
   else
     return idle_thread;
 }
