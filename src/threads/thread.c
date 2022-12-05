@@ -4,6 +4,7 @@
 #include <random.h>
 #include <stdio.h>
 #include <string.h>
+#include "devices/timer.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
@@ -66,11 +67,11 @@ static void init_thread(struct thread*, const char* name, int priority);
 static bool is_thread(struct thread*) UNUSED;
 static void* alloc_frame(struct thread*, size_t size);
 static void schedule(void);
-static void thread_enqueue(struct thread* t, enum thread_queue_type);
+static void thread_enqueue(struct thread* t);
 static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
-void thread_yield_with_queue_type(enum thread_queue_type);
-static struct list* get_thread_queue(struct thread*, enum thread_queue_type);
+static struct list* get_thread_queue(struct thread*);
+void check_sleeping_queue(void);
 
 static void kernel_thread(thread_func*, void* aux);
 static void idle(void* aux UNUSED);
@@ -244,21 +245,13 @@ void thread_block(void) {
   schedule();
 }
 
-static struct list* get_thread_queue(struct thread* t, enum thread_queue_type thread_queue_type) {
-  switch (thread_queue_type) {
-    case THREAD_QUEUE_READY:
-      if (t->priority > PRI_DEFAULT) {
-        return &fifo_ready_hp_list;
-      } else if (t->priority < PRI_DEFAULT) {
-        return &fifo_ready_lp_list;
-      } else {
-        return &fifo_ready_list;
-      }
-    case THREAD_QUEUE_SLEEPING:
-      return &fifo_sleeping_list;
-
-    default:
-      PANIC("Unimplemented thread queue type: %d", thread_queue_type);
+static struct list* get_thread_queue(struct thread* t) {
+  if (t->priority > PRI_DEFAULT) {
+    return &fifo_ready_hp_list;
+  } else if (t->priority < PRI_DEFAULT) {
+    return &fifo_ready_lp_list;
+  } else {
+    return &fifo_ready_list;
   }
 }
 
@@ -266,14 +259,13 @@ static struct list* get_thread_queue(struct thread* t, enum thread_queue_type th
    current active scheduling policy.
    
    This function must be called with interrupts turned off. */
-static void thread_enqueue(struct thread* t, enum thread_queue_type thread_queue_type) {
+static void thread_enqueue(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
   ASSERT(is_thread(t));
 
-  if (active_sched_policy == SCHED_FIFO) {
-    list_push_back(get_thread_queue(t, thread_queue_type), &t->elem);
-  } else if (active_sched_policy == SCHED_PRIO) {
-    list_push_back(get_thread_queue(t, thread_queue_type), &t->elem);
+  // TODO: prblbly should be handled differently
+  if (active_sched_policy == SCHED_FIFO || active_sched_policy == SCHED_PRIO) {
+    list_push_back(get_thread_queue(t), &t->elem);
   } else
     PANIC("Unimplemented scheduling policy value: %d", active_sched_policy);
 }
@@ -293,7 +285,7 @@ void thread_unblock(struct thread* t) {
 
   old_level = intr_disable();
   ASSERT(t->status == THREAD_BLOCKED);
-  thread_enqueue(t, THREAD_QUEUE_READY);
+  thread_enqueue(t);
   t->status = THREAD_READY;
   intr_set_level(old_level);
 }
@@ -338,12 +330,7 @@ void thread_exit(void) {
 
 /* Yields the CPU.  The current thread is not put to sleep and
    may be scheduled again immediately at the scheduler's whim. */
-void thread_yield(void) { thread_yield_with_queue_type(THREAD_QUEUE_READY); }
-
-/* Same as thread_yield, but puts thread to sleeping queue which has lower prio than ready queue */
-void thread_sleep(void) { thread_yield_with_queue_type(THREAD_QUEUE_SLEEPING); }
-
-void thread_yield_with_queue_type(enum thread_queue_type thread_queue_type) {
+void thread_yield(void) {
   struct thread* cur = thread_current();
   enum intr_level old_level;
 
@@ -351,9 +338,28 @@ void thread_yield_with_queue_type(enum thread_queue_type thread_queue_type) {
 
   old_level = intr_disable();
   if (cur != idle_thread)
-    thread_enqueue(cur, thread_queue_type);
+    thread_enqueue(cur);
   cur->status = THREAD_READY;
   schedule();
+  intr_set_level(old_level);
+}
+
+/* Puts thread to sleep,
+   check_sleeping_queue() puts it back on ready queue when time is up */
+void thread_sleep(int64_t start, int64_t ticks) {
+  struct thread* t = thread_current();
+  enum intr_level old_level;
+
+  ASSERT(!intr_context());
+
+  old_level = intr_disable();
+
+  list_push_back(&fifo_sleeping_list, &t->elem);
+  t->sleeping_ticks = ticks;
+  t->sleeping_start = start;
+
+  thread_block();
+
   intr_set_level(old_level);
 }
 
@@ -371,7 +377,7 @@ void thread_foreach(thread_action_func* func, void* aux) {
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
-void thread_set_priority(int new_priority) { 
+void thread_set_priority(int new_priority) {
   int old_priority = thread_current()->priority;
   thread_current()->priority = new_priority;
 
@@ -532,14 +538,12 @@ static struct thread* thread_schedule_fifo(void) {
     return list_entry(list_pop_front(&fifo_ready_list), struct thread, elem);
   } else if (!list_empty(&fifo_ready_lp_list)) {
     return extract_thread_by_priority(&fifo_ready_lp_list);
-  } else if (!list_empty(&fifo_sleeping_list))
-    return extract_thread_by_priority(&fifo_sleeping_list);
-  else
+  } else
     return idle_thread;
 }
 
 /* Strict priority scheduler */
-// TODO: prbly need to change to smth else here
+// TODO: prblbly should be handled differently
 static struct thread* thread_schedule_prio(void) { return thread_schedule_fifo(); }
 
 /* Fair priority scheduler */
@@ -610,6 +614,26 @@ void thread_switch_tail(struct thread* prev) {
   }
 }
 
+/*
+  checks threads in sleeping queue
+  if thread's time is up puts it to ready queue
+*/
+void check_sleeping_queue() {
+  struct list_elem* e = list_begin(&fifo_sleeping_list);
+  struct thread* t;
+
+  while (e != list_end(&fifo_sleeping_list)) {
+    t = list_entry(e, struct thread, elem);
+
+    if (timer_elapsed(t->sleeping_start) >= t->sleeping_ticks) {
+      e = list_remove(e);
+      thread_unblock(t);
+    } else {
+      e = list_next(e);
+    }
+  }
+}
+
 /* Schedules a new thread.  At entry, interrupts must be off and
    the running process's state must have been changed from
    running to some other state.  This function finds another
@@ -618,6 +642,8 @@ void thread_switch_tail(struct thread* prev) {
    It's not safe to call printf() until thread_switch_tail()
    has completed. */
 static void schedule(void) {
+  check_sleeping_queue();
+
   struct thread* cur = running_thread();
   struct thread* next = next_thread_to_run();
   struct thread* prev = NULL;

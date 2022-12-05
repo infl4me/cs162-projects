@@ -15,13 +15,6 @@ enum thread_status {
   THREAD_DYING    /* About to be destroyed. */
 };
 
-enum thread_queue_type {
-  THREAD_QUEUE_READY, /* Queue for ready threads */
-  THREAD_QUEUE_READY_LP, /* Queue for ready low prio threads */
-  THREAD_QUEUE_READY_HP, /* Queue for ready high prio threads */
-  THREAD_QUEUE_SLEEPING,   /* Queue for threads that were put to sleep with timer */
-};
-
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
@@ -96,6 +89,8 @@ struct thread {
   uint8_t* stack;            /* Saved stack pointer. */
   int priority;              /* Priority. */
   struct list_elem allelem;  /* List element for all threads list. */
+  int64_t sleeping_ticks;    /* Timer ticks showing how long the thread will sleep */
+  int64_t sleeping_start;    /* Shows when did the thread put to sleep */
 
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /* List element. */
@@ -143,7 +138,7 @@ const char* thread_name(void);
 
 void thread_exit(void) NO_RETURN;
 void thread_yield(void);
-void thread_sleep(void);
+void thread_sleep(int64_t start, int64_t ticks);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func(struct thread* t, void* aux);
