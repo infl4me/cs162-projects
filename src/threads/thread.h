@@ -24,6 +24,7 @@ typedef int tid_t;
 #define PRI_MIN 0      /* Lowest priority. */
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
+#define PRI_INVALID PRI_MIN - 1     /* Invalid priority (Always less than min). */
 
 /* A kernel thread or user process.
 
@@ -88,9 +89,11 @@ struct thread {
   char name[16];             /* Name (for debugging purposes). */
   uint8_t* stack;            /* Saved stack pointer. */
   int priority;              /* Priority. */
+  int original_priority;     /* Original priority (in case of priority was changed via donation). */
   struct list_elem allelem;  /* List element for all threads list. */
   int64_t sleeping_ticks;    /* Timer ticks showing how long the thread will sleep */
   int64_t sleeping_start;    /* Shows when did the thread put to sleep */
+  struct list donations;     /* Donations given to thread */
 
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /* List element. */
@@ -102,6 +105,12 @@ struct thread {
 
   /* Owned by thread.c. */
   unsigned magic; /* Detects stack overflow. */
+};
+
+struct thread_donation {
+  struct list_elem thread_donation_elem; /* List element. */
+  struct lock* lock;
+  int priority;
 };
 
 /* Types of scheduler that the user can request the kernel
@@ -152,5 +161,9 @@ void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
 struct thread* extract_thread_by_priority(struct list*);
+struct list_elem* find_max_priority_thread_elem(struct list*);
+struct list* get_thread_queue(int priority);
+void change_thread_priority(struct thread* t, int new_priority);
+void thread_dequeue(struct list*, struct thread*);
 
 #endif /* threads/thread.h */

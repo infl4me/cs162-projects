@@ -70,7 +70,6 @@ static void schedule(void);
 static void thread_enqueue(struct thread* t);
 static tid_t allocate_tid(void);
 void thread_switch_tail(struct thread* prev);
-static struct list* get_thread_queue(struct thread*);
 void check_sleeping_queue(void);
 
 static void kernel_thread(thread_func*, void* aux);
@@ -245,10 +244,10 @@ void thread_block(void) {
   schedule();
 }
 
-static struct list* get_thread_queue(struct thread* t) {
-  if (t->priority > PRI_DEFAULT) {
+struct list* get_thread_queue(int priority) {
+  if (priority > PRI_DEFAULT) {
     return &fifo_ready_hp_list;
-  } else if (t->priority < PRI_DEFAULT) {
+  } else if (priority < PRI_DEFAULT) {
     return &fifo_ready_lp_list;
   } else {
     return &fifo_ready_list;
@@ -265,9 +264,35 @@ static void thread_enqueue(struct thread* t) {
 
   // TODO: prblbly should be handled differently
   if (active_sched_policy == SCHED_FIFO || active_sched_policy == SCHED_PRIO) {
-    list_push_back(get_thread_queue(t), &t->elem);
+    list_push_back(get_thread_queue(t->priority), &t->elem);
   } else
     PANIC("Unimplemented scheduling policy value: %d", active_sched_policy);
+}
+
+/*
+  Changes thread's priority
+  Switches thread's queue if necessary
+*/
+void change_thread_priority(struct thread* t, int new_priority) {
+  ASSERT(intr_get_level() == INTR_OFF);
+  ASSERT(is_thread(t));
+
+  int old_priority = t->priority;
+  t->priority = new_priority;
+
+  if (thread_current() == t) {
+    return;
+  }
+
+  struct list* old_queue = get_thread_queue(old_priority);
+  struct list* new_queue = get_thread_queue(new_priority);
+
+  if (old_queue == new_queue) {
+    return;
+  }
+
+  thread_dequeue(old_queue, t);
+  thread_enqueue(t);
 }
 
 /* Transitions a blocked thread T to the ready-to-run state.
@@ -378,11 +403,16 @@ void thread_foreach(thread_action_func* func, void* aux) {
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority) {
-  int old_priority = thread_current()->priority;
-  thread_current()->priority = new_priority;
+  struct thread* cur_t = thread_current();
+  int old_priority = cur_t->priority;
 
-  if (new_priority < old_priority) {
-    thread_yield();
+  cur_t->original_priority = new_priority;
+
+  if (list_empty(&cur_t->donations)) {
+    cur_t->priority = new_priority;
+    if (new_priority < old_priority) {
+      thread_yield();
+    }
   }
 }
 
@@ -484,8 +514,10 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   strlcpy(t->name, name, sizeof t->name);
   t->stack = (uint8_t*)t + PGSIZE;
   t->priority = priority;
+  t->original_priority = priority;
   t->pcb = NULL;
   t->magic = THREAD_MAGIC;
+  list_init(&t->donations);
 
   old_level = intr_disable();
   list_push_back(&all_list, &t->allelem);
@@ -504,30 +536,51 @@ static void* alloc_frame(struct thread* t, size_t size) {
 }
 
 /*
-  Extracts a thread with the highest priority from given queue (fifo)
+  Finds a thread with the highest priority from given queue (fifo)
+  Returns a list element containing the thread
 */
-struct thread* extract_thread_by_priority(struct list* queue) {
-  ASSERT(intr_get_level() == INTR_OFF);
-  ASSERT(!list_empty(queue));
-
+struct list_elem* find_max_priority_thread_elem(struct list* queue) {
   struct list_elem* e;
   struct thread* t;
-  struct list_elem* max_e;
-  struct thread* max_t;
+  struct list_elem* max_e = NULL;
   int max_pri = PRI_MIN - 1;
 
   for (e = list_begin(queue); e != list_end(queue); e = list_next(e)) {
     t = list_entry(e, struct thread, elem);
     if (t->priority > max_pri) {
-      max_t = t;
       max_e = e;
       max_pri = t->priority;
     }
   }
 
-  list_remove(max_e);
+  return max_e;
+}
 
-  return max_t;
+/*
+  Extracts a thread with the highest priority from given queue (fifo)
+*/
+struct thread* extract_thread_by_priority(struct list* queue) {
+  ASSERT(!list_empty(queue));
+
+  struct list_elem* e = find_max_priority_thread_elem(queue);
+  struct thread* t = list_entry(e, struct thread, elem);
+
+  list_remove(e);
+
+  return t;
+}
+
+void thread_dequeue(struct list* queue, struct thread* t) {
+  struct list_elem* e = list_begin(queue);
+
+  while (e != list_end(queue)) {
+    if (list_entry(e, struct thread, elem) == t) {
+      list_remove(e);
+      return;
+    } else {
+      e = list_next(e);
+    }
+  }
 }
 
 /* First-in first-out scheduler */

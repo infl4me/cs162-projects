@@ -31,6 +31,7 @@
 #include <string.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/malloc.h"
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -147,6 +148,37 @@ static void sema_test_helper(void* sema_) {
   }
 }
 
+struct list_elem* find_priority_donation(struct list*, struct lock*);
+struct list_elem* find_priority_donation(struct list* queue, struct lock* lock) {
+  struct list_elem* e;
+
+  for (e = list_begin(queue); e != list_end(queue); e = list_next(e)) {
+    if (list_entry(e, struct thread_donation, thread_donation_elem)->lock == lock) {
+      return e;
+    }
+  }
+
+  return NULL;
+}
+
+struct list_elem* find_max_priority_donation(struct list*);
+struct list_elem* find_max_priority_donation(struct list* queue) {
+  struct list_elem* e;
+  struct thread_donation* thread_donation;
+  struct list_elem* max_e = NULL;
+  int max_pri = PRI_MIN - 1;
+
+  for (e = list_begin(queue); e != list_end(queue); e = list_next(e)) {
+    thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
+    if (thread_donation->priority > max_pri) {
+      max_e = e;
+      max_pri = thread_donation->priority;
+    }
+  }
+
+  return max_e;
+}
+
 /* Initializes LOCK.  A lock can be held by at most a single
    thread at any given time.  Our locks are not "recursive", that
    is, it is an error for the thread currently holding a lock to
@@ -169,6 +201,44 @@ void lock_init(struct lock* lock) {
   sema_init(&lock->semaphore, 1);
 }
 
+void lock_make_donation(struct lock*);
+void lock_make_donation(struct lock* lock) {
+  ASSERT(intr_get_level() == INTR_OFF);
+
+  if (lock->holder == NULL)
+    return;
+
+  struct thread* cur_t = thread_current();
+  struct thread_donation* thread_donation;
+
+  if (cur_t->priority <= lock->holder->original_priority)
+    return;
+
+  // if there already a donation linked to this lock -- use it
+  struct list_elem* e = find_priority_donation(&lock->holder->donations, lock);
+  if (e != NULL) {
+    thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
+    // if current thread priority higher than previous, replace it
+    if (cur_t->priority > thread_donation->priority) {
+      thread_donation->priority = cur_t->priority;
+      change_thread_priority(lock->holder, cur_t->priority);
+    }
+
+    return;
+  }
+
+  thread_donation = malloc(sizeof(struct thread_donation));
+  if (thread_donation != NULL) {
+    thread_donation->lock = lock;
+    thread_donation->priority = cur_t->priority;
+    list_push_back(&lock->holder->donations, &thread_donation->thread_donation_elem);
+
+    if (lock->holder->priority < cur_t->priority) {
+      change_thread_priority(lock->holder, cur_t->priority);
+    }
+  }
+}
+
 /* Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
    thread.
@@ -182,7 +252,12 @@ void lock_acquire(struct lock* lock) {
   ASSERT(!intr_context());
   ASSERT(!lock_held_by_current_thread(lock));
 
+  enum intr_level old_level = intr_disable();
+  lock_make_donation(lock);
+  intr_set_level(old_level);
+
   sema_down(&lock->semaphore);
+
   lock->holder = thread_current();
 }
 
@@ -204,6 +279,44 @@ bool lock_try_acquire(struct lock* lock) {
   return success;
 }
 
+void lock_cleanup_donations(struct lock* lock);
+void lock_cleanup_donations(struct lock* lock) {
+  ASSERT(intr_get_level() == INTR_OFF);
+
+  if (list_empty(&lock->holder->donations))
+    return;
+
+  struct list_elem* e;
+  struct thread_donation* thread_donation;
+
+  e = find_priority_donation(&lock->holder->donations, lock);
+
+  // no donations for current lock
+  if (e == NULL) {
+    return;
+  }
+
+  thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
+  list_remove(e);
+  free(thread_donation);
+
+  // recheck list after removal
+  // if no donations switch to holder's original prio
+  if (list_empty(&lock->holder->donations)) {
+    if (lock->holder->priority != lock->holder->original_priority) {
+      change_thread_priority(lock->holder, lock->holder->original_priority);
+    }
+
+    return;
+  }
+
+  e = find_max_priority_donation(&lock->holder->donations);
+  thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
+  if (thread_donation->priority > lock->holder->priority) {
+    change_thread_priority(lock->holder, thread_donation->priority);
+  }
+}
+
 /* Releases LOCK, which must be owned by the current thread.
 
    An interrupt handler cannot acquire a lock, so it does not
@@ -212,6 +325,10 @@ bool lock_try_acquire(struct lock* lock) {
 void lock_release(struct lock* lock) {
   ASSERT(lock != NULL);
   ASSERT(lock_held_by_current_thread(lock));
+
+  enum intr_level old_level = intr_disable();
+  lock_cleanup_donations(lock);
+  intr_set_level(old_level);
 
   lock->holder = NULL;
   sema_up(&lock->semaphore);
@@ -354,7 +471,6 @@ void cond_signal(struct condition* cond, struct lock* lock UNUSED) {
     int max_pri = PRI_MIN - 1;
     struct semaphore* semaphore;
     struct semaphore* max_semaphore;
-    
 
     for (e = list_begin(&cond->waiters); e != list_end(&cond->waiters); e = list_next(e)) {
       semaphore = &list_entry(e, struct semaphore_elem, elem)->semaphore;
