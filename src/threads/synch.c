@@ -312,9 +312,7 @@ void lock_cleanup_donations(struct lock* lock) {
 
   e = find_max_priority_donation(&lock->holder->donations);
   thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
-  if (thread_donation->priority > lock->holder->priority) {
-    change_thread_priority(lock->holder, thread_donation->priority);
-  }
+  change_thread_priority(lock->holder, thread_donation->priority);
 }
 
 /* Releases LOCK, which must be owned by the current thread.
