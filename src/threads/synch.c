@@ -201,6 +201,42 @@ void lock_init(struct lock* lock) {
   sema_init(&lock->semaphore, 1);
 }
 
+/*
+  Makes nested donations
+
+  Case:
+    threadX (prio 31) holds lockA
+    threadY (prio 32) holds lockB
+    threadY tries lockA, donates 32 to treadX
+    threadZ tries lockB, donates 33 to threadY, also donates 33 to threadX
+  So, in this scenario threadZ made a nested donation to threadX
+  This should work recursively for an unlimeted number of threads
+  
+*/
+void lock_make_nested_donation(struct thread*);
+void lock_make_nested_donation(struct thread* t) {
+  if (t->blocking_lock == NULL || t->status != THREAD_BLOCKED) {
+    return;
+  }
+
+  struct thread* cur_t = thread_current();
+
+  struct list_elem* e = find_priority_donation(&t->blocking_lock->holder->donations, t->blocking_lock);
+  struct thread_donation* thread_donation =
+      list_entry(e, struct thread_donation, thread_donation_elem);
+
+  if (thread_donation == NULL) {
+    return;
+  }
+
+  if (cur_t->priority > thread_donation->priority) {
+    thread_donation->priority = cur_t->priority;
+    change_thread_priority(t->blocking_lock->holder, cur_t->priority);
+  }
+
+  lock_make_nested_donation(t->blocking_lock->holder);
+}
+
 void lock_make_donation(struct lock*);
 void lock_make_donation(struct lock* lock) {
   ASSERT(intr_get_level() == INTR_OFF);
@@ -211,26 +247,36 @@ void lock_make_donation(struct lock* lock) {
   struct thread* cur_t = thread_current();
   struct thread_donation* thread_donation;
 
+  // check whether we should make a donation against the original priority
+  // so we can make a donation even though the current priority is higher
+  // and the donation can be used later when the thread is freed of the current one
   if (cur_t->priority <= lock->holder->original_priority)
     return;
 
-  // if there already a donation linked to this lock -- use it
+  lock_make_nested_donation(lock->holder);
+
+  // if there already a donation linked to this lock
+  // use it and change thread_donation accordingly
   struct list_elem* e = find_priority_donation(&lock->holder->donations, lock);
   if (e != NULL) {
     thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
     // if current thread priority higher than previous, replace it
     if (cur_t->priority > thread_donation->priority) {
       thread_donation->priority = cur_t->priority;
+      thread_donation->donor = cur_t;
       change_thread_priority(lock->holder, cur_t->priority);
     }
 
     return;
   }
 
+  // if there is no donations for current lock
+  // create a new one
   thread_donation = malloc(sizeof(struct thread_donation));
   if (thread_donation != NULL) {
     thread_donation->lock = lock;
     thread_donation->priority = cur_t->priority;
+    thread_donation->donor = cur_t;
     list_push_back(&lock->holder->donations, &thread_donation->thread_donation_elem);
 
     if (lock->holder->priority < cur_t->priority) {
@@ -253,6 +299,9 @@ void lock_acquire(struct lock* lock) {
   ASSERT(!lock_held_by_current_thread(lock));
 
   enum intr_level old_level = intr_disable();
+  if (lock->holder != NULL) {
+    thread_current()->blocking_lock = lock;
+  }
   lock_make_donation(lock);
   intr_set_level(old_level);
 
@@ -287,7 +336,7 @@ void lock_cleanup_donations(struct lock* lock) {
     return;
 
   struct list_elem* e;
-  struct thread_donation* thread_donation;
+  struct thread_donation* old_thread_donation;
 
   e = find_priority_donation(&lock->holder->donations, lock);
 
@@ -296,12 +345,13 @@ void lock_cleanup_donations(struct lock* lock) {
     return;
   }
 
-  thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
+  // free donation for current lock
+  old_thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
   list_remove(e);
-  free(thread_donation);
+  old_thread_donation->donor->blocking_lock = NULL;
 
   // recheck list after removal
-  // if no donations switch to holder's original prio
+  // if no other donations switch to holder's original prio
   if (list_empty(&lock->holder->donations)) {
     if (lock->holder->priority != lock->holder->original_priority) {
       change_thread_priority(lock->holder, lock->holder->original_priority);
@@ -310,9 +360,11 @@ void lock_cleanup_donations(struct lock* lock) {
     return;
   }
 
+  // find another donation with highest prio and switch thread's prio to it
   e = find_max_priority_donation(&lock->holder->donations);
-  thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
-  change_thread_priority(lock->holder, thread_donation->priority);
+  struct thread_donation* new_thread_donation = list_entry(e, struct thread_donation, thread_donation_elem);
+  change_thread_priority(lock->holder, new_thread_donation->priority);
+  free(old_thread_donation);
 }
 
 /* Releases LOCK, which must be owned by the current thread.
