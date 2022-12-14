@@ -10,6 +10,7 @@
 #include "pagedir.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
+#include "threads/synch.h"
 #include <float.h>
 
 static void syscall_handler(struct intr_frame*);
@@ -29,7 +30,6 @@ void syscall_init(void) {
 
 void exit_process(int status) {
   printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
-  lock_release(&syscall_lock);
   process_exit(status);
 }
 
@@ -76,25 +76,184 @@ bool is_char_pointer_valid(uint32_t* p) {
   return is_char_pointer_valid(&p[i]);
 }
 
-static void syscall_handler(struct intr_frame* f) {
+static bool file_syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
   struct file* file;
   struct process_file* process_file;
 
   lock_acquire(&syscall_lock);
 
+  switch (args[0]) {
+    // FILESYS SYSCALLS
+    case SYS_CREATE:
+      check_args_filesys(args, 2);
+
+      if (!is_char_pointer_valid(&args[1])) {
+        lock_release(&syscall_lock);
+        exit_process(-1);
+      }
+
+      f->eax = filesys_create((char*)args[1], args[2]);
+
+      break;
+    case SYS_REMOVE:
+      check_args_filesys(args, 1);
+
+      if (!is_char_pointer_valid(&args[1])) {
+        lock_release(&syscall_lock);
+        exit_process(-1);
+      }
+
+      f->eax = filesys_remove((char*)args[1]);
+
+      break;
+    case SYS_OPEN:
+      check_args_filesys(args, 1);
+
+      if (!is_char_pointer_valid(&args[1])) {
+        lock_release(&syscall_lock);
+        exit_process(-1);
+      }
+
+      file = filesys_open((char*)args[1]);
+      if (file == NULL) {
+        f->eax = FD_ERROR;
+        lock_release(&syscall_lock);
+        return 1;
+      }
+
+      f->eax = register_process_file(file);
+
+      break;
+    case SYS_FILESIZE:
+      check_args_filesys(args, 1);
+
+      process_file = find_process_file(args[1]);
+
+      f->eax = process_file == NULL ? 0 : file_length(process_file->file);
+
+      break;
+    case SYS_READ:
+      check_args_filesys(args, 3);
+
+      if (!is_pointer_valid((uint32_t*)args[2])) {
+        lock_release(&syscall_lock);
+        exit_process(-1);
+      }
+
+      if (args[1] == STDIN_FILENO) {
+        lock_release(&syscall_lock);
+
+        uint8_t* buffer = (uint8_t*)args[2];
+        int c;
+
+        for (uint32_t i = 0; i < args[3]; i++) {
+          c = input_getc();
+          if (c == '\n') {
+            f->eax = i;
+            return 1;
+          } else {
+            buffer[i] = input_getc();
+          }
+        }
+
+        f->eax = args[3];
+
+        return 1;
+      }
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        f->eax = -1;
+        lock_release(&syscall_lock);
+        return 1;
+      }
+
+      f->eax = file_read(process_file->file, (void*)args[2], args[3]);
+
+      break;
+    case SYS_WRITE:
+      check_args_filesys(args, 3);
+
+      if (!is_pointer_valid((uint32_t*)args[2])) {
+        lock_release(&syscall_lock);
+        exit_process(-1);
+      }
+
+      if (args[1] == STDOUT_FILENO) {
+        // if write target is stdout, redirect it to kernel console
+        putbuf((char*)args[2], args[3]);
+        f->eax = args[3];
+        lock_release(&syscall_lock);
+        return 1;
+      }
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        f->eax = 0;
+        lock_release(&syscall_lock);
+        return 1;
+      }
+
+      f->eax = file_write(process_file->file, (void*)args[2], args[3]);
+
+      break;
+    case SYS_SEEK:
+      check_args_filesys(args, 2);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        lock_release(&syscall_lock);
+        return 1;
+      }
+
+      file_seek(process_file->file, args[2]);
+
+      break;
+    case SYS_TELL:
+      check_args_filesys(args, 1);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        f->eax = 0;
+        lock_release(&syscall_lock);
+        return 1;
+      }
+
+      f->eax = file_tell(process_file->file);
+
+      break;
+    case SYS_CLOSE:
+      check_args_filesys(args, 1);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        lock_release(&syscall_lock);
+        return 1;
+      }
+
+      file_close(process_file->file);
+      remove_process_file(args[1]);
+
+      break;
+    default:
+      lock_release(&syscall_lock);
+      return 0;
+  }
+
+  lock_release(&syscall_lock);
+
+  return 1;
+}
+
+static void syscall_handler(struct intr_frame* f) {
+  uint32_t* args = ((uint32_t*)f->esp);
+
   if (!is_pointer_valid(args)) {
     exit_process(-1);
   }
 
-  /*
-   * The following print statement, if uncommented, will print out the syscall
-   * number whenever a process enters a system call. You might find it useful
-   * when debugging. It will cause tests to fail, however, so you should not
-   * include it in your final submission.
-   */
-
-  // printf("System call number: %d\n", args[0]);
+  if (file_syscall_handler(f)) return;
 
   switch (args[0]) {
     case SYS_PRACTICE:
@@ -113,7 +272,6 @@ static void syscall_handler(struct intr_frame* f) {
       exit_process(args[1]);
       break;
     case SYS_HALT:
-      lock_release(&syscall_lock);
       shutdown_power_off();
     case SYS_EXEC:
       check_args(args, 1);
@@ -130,163 +288,30 @@ static void syscall_handler(struct intr_frame* f) {
       break;
     case SYS_WAIT:
       check_args(args, 1);
-      lock_release(&syscall_lock);
       f->eax = process_wait(args[1]);
-      lock_acquire(&syscall_lock);
       break;
-
-    // FILESYS SYSCALLS
-    case SYS_CREATE:
-      check_args_filesys(args, 2);
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      f->eax = filesys_create((char*)args[1], args[2]);
-
+    case SYS_LOCK_INIT:
+      lock_init((struct lock*)args[1]);
+      f->eax = true;
       break;
-    case SYS_REMOVE:
-      check_args_filesys(args, 1);
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      f->eax = filesys_remove((char*)args[1]);
-
+    case SYS_LOCK_ACQUIRE:
+      lock_acquire((struct lock*)args[1]);
       break;
-    case SYS_OPEN:
-      check_args_filesys(args, 1);
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      file = filesys_open((char*)args[1]);
-      if (file == NULL) {
-        f->eax = FD_ERROR;
-        lock_release(&syscall_lock);
-        return;
-      }
-
-      f->eax = register_process_file(file);
-
+    case SYS_LOCK_RELEASE:
+      lock_release((struct lock*)args[1]);
       break;
-    case SYS_FILESIZE:
-      check_args_filesys(args, 1);
-
-      process_file = find_process_file(args[1]);
-
-      f->eax = process_file == NULL ? 0 : file_length(process_file->file);
-
+    case SYS_PT_CREATE:
+      f->eax = pthread_execute((stub_fun)args[1], (pthread_fun)args[2], (void*)args[3]);
       break;
-    case SYS_READ:
-      check_args_filesys(args, 3);
-
-      if (!is_pointer_valid((uint32_t*)args[2])) {
-        exit_process(-1);
-      }
-
-      if (args[1] == STDIN_FILENO) {
-        lock_release(&syscall_lock);
-
-        uint8_t* buffer = (uint8_t*)args[2];
-        int c;
-
-        for (uint32_t i = 0; i < args[3]; i++) {
-          c = input_getc();
-          if (c == '\n') {
-            f->eax = i;
-            return;
-          } else {
-            buffer[i] = input_getc();
-          }
-        }
-
-        f->eax = args[3];
-
-        return;
-      }
-
-      process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
-        f->eax = -1;
-        lock_release(&syscall_lock);
-        return;
-      }
-
-      f->eax = file_read(process_file->file, (void*)args[2], args[3]);
-
+    case SYS_PT_JOIN:
+      f->eax = pthread_join((tid_t)args[1]);
       break;
-    case SYS_WRITE:
-      check_args_filesys(args, 3);
-
-      if (!is_pointer_valid((uint32_t*)args[2])) {
-        exit_process(-1);
-      }
-
-      if (args[1] == STDOUT_FILENO) {
-        // if write target is stdout, redirect it to kernel console
-        putbuf((char*)args[2], args[3]);
-        f->eax = args[3];
-        lock_release(&syscall_lock);
-        return;
-      }
-
-      process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
-        f->eax = 0;
-        lock_release(&syscall_lock);
-        return;
-      }
-
-      f->eax = file_write(process_file->file, (void*)args[2], args[3]);
-
-      break;
-    case SYS_SEEK:
-      check_args_filesys(args, 2);
-
-      process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
-        lock_release(&syscall_lock);
-        return;
-      }
-
-      file_seek(process_file->file, args[2]);
-
-      break;
-    case SYS_TELL:
-      check_args_filesys(args, 1);
-
-      process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
-        f->eax = 0;
-        lock_release(&syscall_lock);
-        return;
-      }
-
-      f->eax = file_tell(process_file->file);
-
-      break;
-    case SYS_CLOSE:
-      check_args_filesys(args, 1);
-
-      process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
-        lock_release(&syscall_lock);
-        return;
-      }
-
-      file_close(process_file->file);
-      remove_process_file(args[1]);
-
+    case SYS_PT_EXIT:
+      pthread_exit();
       break;
 
     default:
       NOT_REACHED();
       break;
   }
-
-  lock_release(&syscall_lock);
 }
