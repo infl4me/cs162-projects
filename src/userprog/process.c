@@ -783,11 +783,20 @@ bool setup_thread(void** esp) {
   uint8_t* kpage;
   bool success = false;
 
+  int i = 1;
+
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
-    success = install_page(((uint8_t*)PHYS_BASE) - (PGSIZE * 2), kpage, true);
+    // leave every second page empty for now
+    // so if a thread's stack is overflowed it will access an empty page with page fault
+    uint8_t* base = (uint8_t*)PHYS_BASE - (PGSIZE * 2 * i); 
+
+    // use base - PGSIZE because installation of a page goes in reverse way
+    // as opposed to stack growth
+    success = install_page(base - PGSIZE, kpage, true);
+
     if (success)
-      *esp = PHYS_BASE - PGSIZE - 20;
+      *esp = base;
     else
       palloc_free_page(kpage);
   }
