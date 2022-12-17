@@ -287,32 +287,17 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_LOCK_INIT:
       check_args(args, 1);
 
-      if (!is_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      lock_init((struct lock*)args[1]);
-      f->eax = true;
+      f->eax = process_init_lock(args[1]);
       break;
     case SYS_LOCK_ACQUIRE:
       check_args(args, 1);
 
-      if (!is_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      lock_acquire((struct lock*)args[1]);
-      f->eax = true;
+      f->eax = process_acquire_lock(args[1]);
       break;
     case SYS_LOCK_RELEASE:
       check_args(args, 1);
 
-      if (!is_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      lock_release((struct lock*)args[1]);
-      f->eax = true;
+      f->eax = process_release_lock(args[1]);
       break;
 
     // threads

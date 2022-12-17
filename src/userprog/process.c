@@ -24,11 +24,18 @@ static struct list all_children_list;
 static struct lock all_children_list_lock;
 
 static struct lock process_threads_lock;
+static struct lock process_locks_lock;
 
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void** esp, int thread_id);
+
+struct user_lock {
+  uintptr_t user_lock_id;
+  struct lock lock;
+  struct list_elem user_lock_elem;
+};
 
 /* Lock used by allocate_fd(). */
 static struct lock fd_lock;
@@ -112,6 +119,7 @@ void userprog_init(void) {
   lock_init(&all_children_list_lock);
   lock_init(&fd_lock);
   lock_init(&process_threads_lock);
+  lock_init(&process_locks_lock);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -246,6 +254,7 @@ static void start_process(void* args_) {
     new_pcb->parent_pid = args->parent_pid;
     list_init(&new_pcb->process_files);
     list_init(&new_pcb->process_threads);
+    list_init(&new_pcb->process_locks);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -435,18 +444,33 @@ void process_exit(int status) {
   }
 
   // TODO: need to exit all threads of the current process before freeing process_threads
-    // free process_threads list structures
+  // free process_threads list structures
   {
     struct list_elem *elem, *next;
-    for (elem = list_begin(&cur->pcb->process_threads); elem != list_end(&cur->pcb->process_threads);
-         elem = next) {
+    for (elem = list_begin(&cur->pcb->process_threads);
+         elem != list_end(&cur->pcb->process_threads); elem = next) {
       next = list_next(elem);
-      struct process_thread* process_thread = list_entry(elem, struct process_thread, process_thread_elem);
+      struct process_thread* process_thread =
+          list_entry(elem, struct process_thread, process_thread_elem);
 
       list_remove(&process_thread->process_thread_elem);
       free(process_thread);
     }
   }
+
+  // // TODO: need to exit all threads of the current process before freeing process_locks
+  // // free process_locks list structures
+  // {
+  //   struct list_elem *elem, *next;
+  //   for (elem = list_begin(&cur->pcb->process_locks); elem != list_end(&cur->pcb->process_locks);
+  //        elem = next) {
+  //     next = list_next(elem);
+  //     struct user_lock* user_lock = list_entry(elem, struct user_lock, user_lock_elem);
+
+  //     list_remove(&user_lock->user_lock_elem);
+  //     free(user_lock);
+  //   }
+  // }
 
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
@@ -990,7 +1014,6 @@ tid_t pthread_join(tid_t tid) {
 
   lock_release(&process_threads_lock);
 
-
   sema_down(&process_thread->exit_wait);
 
   return tid;
@@ -1043,3 +1066,87 @@ void pthread_exit(void) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_exit_main(void) {}
+
+bool process_init_lock(uintptr_t user_lock_id) {
+  if (user_lock_id == 0) {
+    return false;
+  }
+
+  struct thread* cur_t = thread_current();
+  struct user_lock* user_lock = malloc(sizeof(struct user_lock));
+
+  if (user_lock == NULL) {
+    return false;
+  }
+
+  user_lock->user_lock_id = user_lock_id;
+  lock_init(&user_lock->lock);
+
+  lock_acquire(&process_locks_lock);
+  list_push_back(&cur_t->pcb->process_locks, &user_lock->user_lock_elem);
+  lock_release(&process_locks_lock);
+
+  return true;
+}
+
+bool process_acquire_lock(uintptr_t user_lock_id) {
+  if (user_lock_id == 0) {
+    return false;
+  }
+
+  struct list_elem* e;
+  struct thread* cur_t = thread_current();
+
+  struct user_lock* user_lock = NULL;
+
+  lock_acquire(&process_locks_lock);
+
+  for (e = list_begin(&cur_t->pcb->process_locks); e != list_end(&cur_t->pcb->process_locks);
+       e = list_next(e)) {
+    struct user_lock* cur_user_lock = list_entry(e, struct user_lock, user_lock_elem);
+    if (cur_user_lock->user_lock_id == user_lock_id) {
+      user_lock = cur_user_lock;
+      break;
+    }
+  }
+
+  if (user_lock == NULL || user_lock->lock.holder == cur_t)
+    return false;
+
+  lock_release(&process_locks_lock);
+
+  lock_acquire(&user_lock->lock);
+
+  return true;
+}
+
+bool process_release_lock(uintptr_t user_lock_id) {
+  if (user_lock_id == 0) {
+    return false;
+  }
+
+  struct list_elem* e;
+  struct thread* cur_t = thread_current();
+
+  struct user_lock* user_lock = NULL;
+
+  lock_acquire(&process_locks_lock);
+
+  for (e = list_begin(&cur_t->pcb->process_locks); e != list_end(&cur_t->pcb->process_locks);
+       e = list_next(e)) {
+    struct user_lock* cur_user_lock = list_entry(e, struct user_lock, user_lock_elem);
+    if (cur_user_lock->user_lock_id == user_lock_id) {
+      user_lock = cur_user_lock;
+      break;
+    }
+  }
+
+  if (user_lock == NULL || user_lock->lock.holder != cur_t)
+    return false;
+
+  lock_release(&process_locks_lock);
+
+  lock_release(&user_lock->lock);
+
+  return true;
+}

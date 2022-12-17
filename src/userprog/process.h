@@ -36,6 +36,7 @@ struct process {
   struct list process_files;
   struct file* exec_file; // pointer to process executable file
   struct list process_threads;
+  struct list process_locks;
 };
 
 struct process_child {
@@ -79,5 +80,9 @@ fd register_process_file(struct file* file);
 fd allocate_fd(void);
 struct process_file* find_process_file(fd fd);
 bool remove_process_file(fd fd);
+
+bool process_release_lock(uintptr_t user_lock_id);
+bool process_acquire_lock(uintptr_t user_lock_id);
+bool process_init_lock(uintptr_t user_lock_id);
 
 #endif /* userprog/process.h */
