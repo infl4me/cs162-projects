@@ -21,10 +21,10 @@ typedef int tid_t;
 #define TID_ERROR ((tid_t)-1) /* Error value for tid_t. */
 
 /* Thread priorities. */
-#define PRI_MIN 0      /* Lowest priority. */
-#define PRI_DEFAULT 31 /* Default priority. */
-#define PRI_MAX 63     /* Highest priority. */
-#define PRI_INVALID PRI_MIN - 1     /* Invalid priority (Always less than min). */
+#define PRI_MIN 0               /* Lowest priority. */
+#define PRI_DEFAULT 31          /* Default priority. */
+#define PRI_MAX 63              /* Highest priority. */
+#define PRI_INVALID PRI_MIN - 1 /* Invalid priority (Always less than min). */
 
 /* A kernel thread or user process.
 
@@ -101,7 +101,8 @@ struct thread {
 
 #ifdef USERPROG
   /* Owned by process.c. */
-  struct process* pcb; /* Process control block if this thread is a userprog */
+  struct process* pcb;   /* Process control block if this thread is a userprog */
+  int process_thread_id; /* thread's id within a process */
 #endif
 
   /* Owned by thread.c. */

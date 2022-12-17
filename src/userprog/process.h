@@ -35,6 +35,7 @@ struct process {
   pid_t parent_pid;
   struct list process_files;
   struct file* exec_file; // pointer to process executable file
+  struct list process_threads;
 };
 
 struct process_child {
@@ -49,6 +50,14 @@ struct process_file {
   struct list_elem process_file_elem;
   fd fd;
   struct file* file;
+};
+
+struct process_thread {
+  struct list_elem process_thread_elem;
+  struct semaphore exit_wait; // semaphore for waiting of thread exit
+  tid_t tid;
+  struct thread* thread_waiter; // pointer to the thread that waits on this process_thread (via join)
+  bool thread_exited; // indicates that thread has exited
 };
 
 void userprog_init(void);
