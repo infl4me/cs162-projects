@@ -864,6 +864,7 @@ tid_t pthread_execute(stub_fun sf, pthread_fun tf, void* arg) {
     return TID_ERROR;
   }
 
+  // wait until start_pthread is done setting up the thread
   sema_down(&start_pthread_args->process_thread_setup_wait);
 
   if (start_pthread_args->setup_failed) {

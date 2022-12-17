@@ -76,6 +76,8 @@ bool is_char_pointer_valid(uint32_t* p) {
   return is_char_pointer_valid(&p[i]);
 }
 
+// handles file's syscalls
+// returns true if syscall was handled
 static bool file_syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
   struct file* file;
@@ -253,26 +255,16 @@ static void syscall_handler(struct intr_frame* f) {
     exit_process(-1);
   }
 
-  if (file_syscall_handler(f)) return;
+  if (file_syscall_handler(f))
+    return;
 
   switch (args[0]) {
-    case SYS_PRACTICE:
-      check_args(args, 1);
-
-      f->eax = args[1] + 1;
-      break;
-    case SYS_COMPUTE_E:
-      check_args(args, 1);
-
-      f->eax = sys_sum_to_e(args[1]);
-      break;
+    // processes
     case SYS_EXIT:
       check_args(args, 1);
 
       exit_process(args[1]);
       break;
-    case SYS_HALT:
-      shutdown_power_off();
     case SYS_EXEC:
       check_args(args, 1);
 
@@ -290,25 +282,72 @@ static void syscall_handler(struct intr_frame* f) {
       check_args(args, 1);
       f->eax = process_wait(args[1]);
       break;
+
+    // synch
     case SYS_LOCK_INIT:
+      check_args(args, 1);
+
+      if (!is_pointer_valid(&args[1])) {
+        exit_process(-1);
+      }
+
       lock_init((struct lock*)args[1]);
       f->eax = true;
       break;
     case SYS_LOCK_ACQUIRE:
+      check_args(args, 1);
+
+      if (!is_pointer_valid(&args[1])) {
+        exit_process(-1);
+      }
+
       lock_acquire((struct lock*)args[1]);
+      f->eax = true;
       break;
     case SYS_LOCK_RELEASE:
+      check_args(args, 1);
+
+      if (!is_pointer_valid(&args[1])) {
+        exit_process(-1);
+      }
+
       lock_release((struct lock*)args[1]);
+      f->eax = true;
       break;
+
+    // threads
     case SYS_PT_CREATE:
+      check_args(args, 3);
+
+      if (!is_pointer_valid(&args[1]) || !is_pointer_valid(&args[2]) ||
+          !is_pointer_valid(&args[3])) {
+        exit_process(-1);
+      }
+
       f->eax = pthread_execute((stub_fun)args[1], (pthread_fun)args[2], (void*)args[3]);
       break;
     case SYS_PT_JOIN:
+      check_args(args, 1);
+
       f->eax = pthread_join((tid_t)args[1]);
       break;
     case SYS_PT_EXIT:
       pthread_exit();
       break;
+
+    // other
+    case SYS_PRACTICE:
+      check_args(args, 1);
+
+      f->eax = args[1] + 1;
+      break;
+    case SYS_COMPUTE_E:
+      check_args(args, 1);
+
+      f->eax = sys_sum_to_e(args[1]);
+      break;
+    case SYS_HALT:
+      shutdown_power_off();
 
     default:
       NOT_REACHED();
