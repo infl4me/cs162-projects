@@ -25,6 +25,7 @@ static struct lock all_children_list_lock;
 
 static struct lock process_threads_lock;
 static struct lock process_locks_lock;
+static struct lock process_semas_lock;
 
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
@@ -35,6 +36,12 @@ struct user_lock {
   uintptr_t user_lock_id;
   struct lock lock;
   struct list_elem user_lock_elem;
+};
+
+struct user_sema {
+  uintptr_t user_sema_id;
+  struct semaphore sema;
+  struct list_elem user_sema_elem;
 };
 
 /* Lock used by allocate_fd(). */
@@ -120,6 +127,7 @@ void userprog_init(void) {
   lock_init(&fd_lock);
   lock_init(&process_threads_lock);
   lock_init(&process_locks_lock);
+  lock_init(&process_semas_lock);
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
@@ -255,6 +263,7 @@ static void start_process(void* args_) {
     list_init(&new_pcb->process_files);
     list_init(&new_pcb->process_threads);
     list_init(&new_pcb->process_locks);
+    list_init(&new_pcb->process_semas);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -460,17 +469,31 @@ void process_exit(int status) {
 
   // // TODO: need to exit all threads of the current process before freeing process_locks
   // // free process_locks list structures
-  // {
-  //   struct list_elem *elem, *next;
-  //   for (elem = list_begin(&cur->pcb->process_locks); elem != list_end(&cur->pcb->process_locks);
-  //        elem = next) {
-  //     next = list_next(elem);
-  //     struct user_lock* user_lock = list_entry(elem, struct user_lock, user_lock_elem);
+  {
+    struct list_elem *elem, *next;
+    for (elem = list_begin(&cur->pcb->process_locks); elem != list_end(&cur->pcb->process_locks);
+         elem = next) {
+      next = list_next(elem);
+      struct user_lock* user_lock = list_entry(elem, struct user_lock, user_lock_elem);
 
-  //     list_remove(&user_lock->user_lock_elem);
-  //     free(user_lock);
-  //   }
-  // }
+      list_remove(&user_lock->user_lock_elem);
+      free(user_lock);
+    }
+  }
+
+  // // TODO: need to exit all threads of the current process before freeing process_semas
+  // // free process_semas list structures
+  {
+    struct list_elem *elem, *next;
+    for (elem = list_begin(&cur->pcb->process_semas); elem != list_end(&cur->pcb->process_semas);
+         elem = next) {
+      next = list_next(elem);
+      struct user_sema* user_sema = list_entry(elem, struct user_sema, user_sema_elem);
+
+      list_remove(&user_sema->user_sema_elem);
+      free(user_sema);
+    }
+  }
 
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
@@ -1068,7 +1091,7 @@ void pthread_exit(void) {
 void pthread_exit_main(void) {}
 
 bool process_init_lock(uintptr_t user_lock_id) {
-  if (user_lock_id == 0) {
+  if (user_lock_id == (int)NULL) {
     return false;
   }
 
@@ -1090,7 +1113,7 @@ bool process_init_lock(uintptr_t user_lock_id) {
 }
 
 bool process_acquire_lock(uintptr_t user_lock_id) {
-  if (user_lock_id == 0) {
+  if (user_lock_id == (int)NULL) {
     return false;
   }
 
@@ -1121,7 +1144,7 @@ bool process_acquire_lock(uintptr_t user_lock_id) {
 }
 
 bool process_release_lock(uintptr_t user_lock_id) {
-  if (user_lock_id == 0) {
+  if (user_lock_id == (int)NULL) {
     return false;
   }
 
@@ -1147,6 +1170,90 @@ bool process_release_lock(uintptr_t user_lock_id) {
   lock_release(&process_locks_lock);
 
   lock_release(&user_lock->lock);
+
+  return true;
+}
+
+bool process_sema_init(uintptr_t user_sema_id, int value) {
+  if (user_sema_id == (int)NULL || value < 0) {
+    return false;
+  }
+
+  struct thread* cur_t = thread_current();
+  struct user_sema* user_sema = malloc(sizeof(struct user_sema));
+
+  if (user_sema == NULL) {
+    return false;
+  }
+
+  user_sema->user_sema_id = user_sema_id;
+  sema_init(&user_sema->sema, value);
+
+  lock_acquire(&process_semas_lock);
+  list_push_back(&cur_t->pcb->process_semas, &user_sema->user_sema_elem);
+  lock_release(&process_semas_lock);
+
+  return true;
+}
+
+bool process_sema_down(uintptr_t user_sema_id) {
+  if (user_sema_id == (int)NULL) {
+    return false;
+  }
+
+  struct list_elem* e;
+  struct thread* cur_t = thread_current();
+
+  struct user_sema* user_sema = NULL;
+
+  lock_acquire(&process_semas_lock);
+
+  for (e = list_begin(&cur_t->pcb->process_semas); e != list_end(&cur_t->pcb->process_semas);
+       e = list_next(e)) {
+    struct user_sema* cur_user_sema = list_entry(e, struct user_sema, user_sema_elem);
+    if (cur_user_sema->user_sema_id == user_sema_id) {
+      user_sema = cur_user_sema;
+      break;
+    }
+  }
+
+  if (user_sema == NULL)
+    return false;
+
+  lock_release(&process_semas_lock);
+
+  sema_down(&user_sema->sema);
+
+  return true;
+}
+
+bool process_sema_up(uintptr_t user_sema_id) {
+  if (user_sema_id == (int)NULL) {
+    return false;
+  }
+
+  struct list_elem* e;
+  struct thread* cur_t = thread_current();
+
+  struct user_sema* user_sema = NULL;
+
+  lock_acquire(&process_semas_lock);
+
+  for (e = list_begin(&cur_t->pcb->process_semas); e != list_end(&cur_t->pcb->process_semas);
+       e = list_next(e)) {
+    struct user_sema* cur_user_sema = list_entry(e, struct user_sema, user_sema_elem);
+    if (cur_user_sema->user_sema_id == user_sema_id) {
+      user_sema = cur_user_sema;
+      break;
+    }
+  }
+
+  if (user_sema == NULL)
+    return false;
+
+  lock_release(&process_semas_lock);
+
+  sema_up(&user_sema->sema);
 
   return true;
 }

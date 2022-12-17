@@ -299,6 +299,21 @@ static void syscall_handler(struct intr_frame* f) {
 
       f->eax = process_release_lock(args[1]);
       break;
+    case SYS_SEMA_INIT:
+      check_args(args, 2);
+
+      f->eax = process_sema_init(args[1], args[2]);
+      break;
+    case SYS_SEMA_UP:
+      check_args(args, 1);
+
+      f->eax = process_sema_up(args[1]);
+      break;
+    case SYS_SEMA_DOWN:
+      check_args(args, 1);
+
+      f->eax = process_sema_down(args[1]);
+      break;
 
     // threads
     case SYS_PT_CREATE:

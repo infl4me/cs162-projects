@@ -37,6 +37,7 @@ struct process {
   struct file* exec_file; // pointer to process executable file
   struct list process_threads;
   struct list process_locks;
+  struct list process_semas;
 };
 
 struct process_child {
@@ -84,5 +85,8 @@ bool remove_process_file(fd fd);
 bool process_release_lock(uintptr_t user_lock_id);
 bool process_acquire_lock(uintptr_t user_lock_id);
 bool process_init_lock(uintptr_t user_lock_id);
+bool process_sema_up(uintptr_t user_sema_id);
+bool process_sema_down(uintptr_t user_sema_id);
+bool process_sema_init(uintptr_t user_sema_id, int value);
 
 #endif /* userprog/process.h */
