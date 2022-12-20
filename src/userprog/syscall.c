@@ -29,7 +29,6 @@ void syscall_init(void) {
 }
 
 void exit_process(int status) {
-  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
   process_exit(status);
 }
 
@@ -333,6 +332,9 @@ static void syscall_handler(struct intr_frame* f) {
       break;
     case SYS_PT_EXIT:
       pthread_exit();
+      break;
+    case SYS_GET_TID:
+      f->eax = thread_current()->tid;
       break;
 
     // other
