@@ -20,8 +20,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct list all_children_list;
-static struct lock all_children_list_lock;
+static struct list process_children;
+static struct lock process_children_lock;
 
 static struct lock process_threads_lock;
 static struct lock process_locks_lock;
@@ -32,6 +32,9 @@ static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void** esp, int thread_id);
 struct process_thread* get_main_process_thread(void);
+struct process_thread* get_unexited_process_thread(void);
+bool is_there_running_process_thread(void);
+struct process_thread* find_process_thread(tid_t, struct process*);
 
 struct user_lock {
   uintptr_t user_lock_id;
@@ -78,6 +81,40 @@ fd register_process_file(struct file* file) {
   return fd;
 }
 
+struct process_thread* get_unexited_process_thread() {
+  struct list_elem* e;
+  struct thread* cur_t = thread_current();
+  struct process_thread* process_thread;
+
+  // skip first element -- main thread
+  for (e = list_begin(&cur_t->pcb->process_threads); e != list_end(&cur_t->pcb->process_threads);
+       e = list_next(e)) {
+    process_thread = list_entry(e, struct process_thread, process_thread_elem);
+    if (cur_t->tid != process_thread->tid && !process_thread->thread_exited) {
+      return process_thread;
+    }
+  }
+
+  return NULL;
+}
+
+bool is_there_running_process_thread() { return get_unexited_process_thread() != NULL; }
+
+struct process_thread* find_process_thread(tid_t tid, struct process* pcb) {
+  struct list_elem* e;
+  struct process_thread* process_thread = NULL;
+
+  for (e = list_begin(&pcb->process_threads); e != list_end(&pcb->process_threads);
+       e = list_next(e)) {
+    process_thread = list_entry(e, struct process_thread, process_thread_elem);
+    if (process_thread->tid == tid) {
+      return process_thread;
+    }
+  }
+
+  return NULL;
+}
+
 struct process_file* find_process_file(fd fd) {
   struct list_elem* e;
   struct thread* thread = thread_current();
@@ -122,9 +159,10 @@ void userprog_init(void) {
      can come at any time and activate our pagedir */
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
+  t->pcb->pid = t->tid;
 
-  list_init(&all_children_list);
-  lock_init(&all_children_list_lock);
+  list_init(&process_children);
+  lock_init(&process_children_lock);
   lock_init(&fd_lock);
   lock_init(&process_threads_lock);
   lock_init(&process_locks_lock);
@@ -154,7 +192,7 @@ struct start_process_args {
 pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
-  struct thread* t = thread_current();
+  struct thread* cur_t = thread_current();
   struct process_child* process_child;
 
   /* Make a copy of FILE_NAME.
@@ -172,7 +210,7 @@ pid_t process_execute(const char* file_name) {
   }
 
   start_process_args->command = fn_copy;
-  start_process_args->parent_pid = t->tid;
+  start_process_args->parent_pid = cur_t->pcb->pid;
   start_process_args->exec_success = 0;
   sema_init(&start_process_args->process_set_wait, 0);
   sema_init(&start_process_args->process_exec_wait, 0);
@@ -202,10 +240,12 @@ pid_t process_execute(const char* file_name) {
   }
 
   process_child->child_pid = tid;
-  process_child->parent_pid = t->tid;
+  process_child->parent_pid = cur_t->pcb->pid;
   process_child->exit_status = 0;
+  process_child->process_child_exited = false;
+  process_child->waiter_tid = TID_ERROR;
   sema_init(&process_child->exit_wait, 0);
-  list_push_back(&all_children_list, &process_child->process_child_elem);
+  list_push_back(&process_children, &process_child->process_child_elem);
 
   sema_up(&start_process_args->process_exec_wait);
 
@@ -278,6 +318,8 @@ static void start_process(void* args_) {
   }
 
   if (success) {
+    new_pcb->process_exited = false;
+    new_pcb->pid = t->tid;
     new_pcb->parent_pid = args->parent_pid;
     list_init(&new_pcb->process_files);
     list_init(&new_pcb->process_threads);
@@ -359,7 +401,7 @@ static void start_process(void* args_) {
 struct process_child* find_child(pid_t parent_pid, pid_t child_pid) {
   struct list_elem* e;
 
-  for (e = list_begin(&all_children_list); e != list_end(&all_children_list); e = list_next(e)) {
+  for (e = list_begin(&process_children); e != list_end(&process_children); e = list_next(e)) {
     struct process_child* process_child = list_entry(e, struct process_child, process_child_elem);
     if (process_child->parent_pid == parent_pid && process_child->child_pid == child_pid) {
       return process_child;
@@ -379,34 +421,50 @@ struct process_child* find_child(pid_t parent_pid, pid_t child_pid) {
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int process_wait(pid_t child_pid) {
-  struct thread* tcb = thread_current();
-  int exit_status;
+  struct thread* cur_t = thread_current();
 
-  struct process_child* process_child = find_child(tcb->tid, child_pid);
+  lock_acquire(&process_children_lock);
+
+  struct process_child* process_child = find_child(cur_t->pcb->pid, child_pid);
   if (!process_child) {
-    return -1;
+    lock_release(&process_children_lock);
+    return TID_ERROR;
   }
+
+  if (process_child->waiter_tid != TID_ERROR) {
+    lock_release(&process_children_lock);
+    return TID_ERROR;
+  }
+
+  process_child->waiter_tid = cur_t->tid;
+
+  if (process_child->process_child_exited) {
+    lock_release(&process_children_lock);
+    return process_child->exit_status;
+  }
+
+  lock_release(&process_children_lock);
 
   sema_down(&process_child->exit_wait);
 
-  exit_status = process_child->exit_status;
-  list_remove(&process_child->process_child_elem);
-  free(process_child);
+  ASSERT(process_child->process_child_exited);
 
-  return exit_status;
+  return process_child->exit_status;
 }
 
 struct process_thread* get_main_process_thread() {
   struct thread* cur_t = thread_current();
-  struct list_elem* e =
-      list_begin(&cur_t->pcb->process_threads); // always first element; no need to lock?
+  struct list_elem* e = list_begin(&cur_t->pcb->process_threads);
   struct process_thread* process_thread = list_entry(e, struct process_thread, process_thread_elem);
 
   return process_thread;
 }
 
+void soft_process_exit(int status) { pthread_exit(); }
+
 /* Free the current process's resources. */
 void process_exit(int status) {
+  intr_disable();
   struct thread* cur_t = thread_current();
   uint32_t* pd;
 
@@ -416,37 +474,13 @@ void process_exit(int status) {
     NOT_REACHED();
   }
 
-  if (is_main_thread(cur_t, cur_t->pcb)) {
-    // here we're trying to detect if main thread exited implicitly (via _start function)
-    // so there is no need to terminate the process, just exit the main thread
-    // if exit was called explicitly the process and all its threads must be immediately terminated
-    // the question is how to distinguish between explicit and implicit exit call
-    // by now we just checking than it is the main thread and the exit status is zero
-    // TODO: need to make better check later (maybe make another syscall? like soft_exit or something)
-    if (status == 0) {
-      struct list_elem* e;
-
-      lock_acquire(&process_threads_lock);
-
-      for (e = list_begin(&cur_t->pcb->process_threads)->next;
-           e != list_end(&cur_t->pcb->process_threads); e = list_next(e)) {
-        struct process_thread* process_thread =
-            list_entry(e, struct process_thread, process_thread_elem);
-        // if there is a thread that is not exited yet
-        // then exit main thread
-        if (!process_thread->thread_exited) {
-          struct process_thread* main_process_thread = get_main_process_thread();
-          main_process_thread->thread_exited = true;
-          cur_t->pcb->main_thread = NULL;
-          lock_release(&process_threads_lock);
-          sema_up(&main_process_thread->exit_wait);
-          thread_exit();
-        }
-      }
-
-      lock_release(&process_threads_lock);
-    }
+  lock_acquire(&process_threads_lock);
+  if (is_there_running_process_thread()) {
+    cur_t->pcb->process_exited = true;
+    lock_release(&process_threads_lock);
+    pthread_exit();
   }
+  lock_release(&process_threads_lock);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -467,35 +501,36 @@ void process_exit(int status) {
   // child process POV
   // acquire the lock so the parent process won't intervene with exiting before we done
   {
-    lock_acquire(&all_children_list_lock);
+    lock_acquire(&process_children_lock);
     // main thread might already been exited, so use get_main_process_thread
     struct process_child* process_child =
         find_child(cur_t->pcb->parent_pid,
                    is_main_thread(cur_t, cur_t->pcb) ? cur_t->tid : get_main_process_thread()->tid);
     if (process_child) {
       process_child->exit_status = status;
+      process_child->process_child_exited = true;
       sema_up(&process_child->exit_wait);
     }
-    lock_release(&all_children_list_lock);
+    lock_release(&process_children_lock);
   }
 
   // parent process POV
   // if parent exits then need to clear all process_child, since they are no longer needed
   {
-    lock_acquire(&all_children_list_lock);
+    lock_acquire(&process_children_lock);
     struct list_elem *elem, *next;
 
-    for (elem = list_begin(&all_children_list); elem != list_end(&all_children_list); elem = next) {
+    for (elem = list_begin(&process_children); elem != list_end(&process_children); elem = next) {
       next = list_next(elem);
       struct process_child* process_child =
           list_entry(elem, struct process_child, process_child_elem);
-      if (process_child->parent_pid == cur_t->tid) {
+      if (process_child->parent_pid == cur_t->pcb->pid) {
         list_remove(elem);
         free(process_child);
       }
     }
 
-    lock_release(&all_children_list_lock);
+    lock_release(&process_children_lock);
   }
 
   file_close(cur_t->pcb->exec_file);
@@ -566,7 +601,7 @@ void process_exit(int status) {
   struct process* pcb_to_free = cur_t->pcb;
   cur_t->pcb = NULL;
   free(pcb_to_free);
-
+  intr_enable();
   thread_exit();
 }
 
@@ -1023,6 +1058,7 @@ static void start_pthread(void* args_) {
 
   lock_acquire(&process_threads_lock);
   t->process_thread_id = list_size(&args->pcb->process_threads);
+  ASSERT(t->process_thread_id > 0);
   list_push_back(&args->pcb->process_threads, &process_thread->process_thread_elem);
   lock_release(&process_threads_lock);
 
@@ -1070,38 +1106,27 @@ static void start_pthread(void* args_) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 tid_t pthread_join(tid_t tid) {
-  struct list_elem* e;
   struct thread* cur_t = thread_current();
 
   if (tid == cur_t->tid) {
     return TID_ERROR;
   }
 
-  struct process_thread* process_thread = NULL;
-
   lock_acquire(&process_threads_lock);
 
-  for (e = list_begin(&cur_t->pcb->process_threads); e != list_end(&cur_t->pcb->process_threads);
-       e = list_next(e)) {
-    struct process_thread* current_process_thread =
-        list_entry(e, struct process_thread, process_thread_elem);
-    if (current_process_thread->tid == tid) {
-      process_thread = current_process_thread;
-      break;
-    }
-  }
+  struct process_thread* process_thread = find_process_thread(tid, cur_t->pcb);
 
   if (process_thread == NULL || process_thread->thread_waiter != NULL) {
     lock_release(&process_threads_lock);
     return TID_ERROR;
   }
 
+  process_thread->thread_waiter = cur_t;
+
   if (process_thread->thread_exited) {
     lock_release(&process_threads_lock);
     return tid;
   }
-
-  process_thread->thread_waiter = cur_t;
 
   lock_release(&process_threads_lock);
 
@@ -1120,55 +1145,29 @@ tid_t pthread_join(tid_t tid) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_exit(void) {
-  struct list_elem* e;
   struct thread* cur_t = thread_current();
 
+  lock_acquire(&process_threads_lock);
+
+  if (!is_there_running_process_thread()) {
+    lock_release(&process_threads_lock);
+    process_exit(0);
+  }
+
   if (is_main_thread(cur_t, cur_t->pcb)) {
+    lock_release(&process_threads_lock);
     pthread_exit_main();
     return;
   }
 
-  struct process_thread* process_thread = NULL;
-
-  lock_acquire(&process_threads_lock);
-
-  for (e = list_begin(&cur_t->pcb->process_threads); e != list_end(&cur_t->pcb->process_threads);
-       e = list_next(e)) {
-    struct process_thread* current_process_thread =
-        list_entry(e, struct process_thread, process_thread_elem);
-    if (current_process_thread->tid == cur_t->tid) {
-      process_thread = current_process_thread;
-      break;
-    }
-  }
-
+  struct process_thread* process_thread = find_process_thread(cur_t->tid, cur_t->pcb);
   ASSERT(process_thread != NULL);
 
   process_thread->thread_exited = true;
 
-  struct process_thread* process_thread_not_exited = NULL;
-  for (e = list_begin(&cur_t->pcb->process_threads); e != list_end(&cur_t->pcb->process_threads);
-       e = list_next(e)) {
-    struct process_thread* current_process_thread =
-        list_entry(e, struct process_thread, process_thread_elem);
-    if (!current_process_thread->thread_exited) {
-      process_thread_not_exited = current_process_thread;
-      break;
-    }
-  }
-
-  // if there is a thread that is not exited
-  // then just exit the current thread
-  // otherwise exit the process, since the current thread is the last one active
-  if (process_thread_not_exited == NULL) {
-    lock_release(&process_threads_lock);
-    sema_up(&process_thread->exit_wait);
-    process_exit(0);
-  } else {
-    lock_release(&process_threads_lock);
-    sema_up(&process_thread->exit_wait);
-    thread_exit();
-  }
+  lock_release(&process_threads_lock);
+  sema_up(&process_thread->exit_wait);
+  thread_exit();
 }
 
 /* Only to be used when the main thread explicitly calls pthread_exit.
@@ -1180,28 +1179,15 @@ void pthread_exit(void) {
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_exit_main(void) {
-  struct list_elem* e;
   struct thread* cur_t = thread_current();
 
   lock_acquire(&process_threads_lock);
-
-  for (e = list_begin(&cur_t->pcb->process_threads)->next;
-       e != list_end(&cur_t->pcb->process_threads); e = list_next(e)) {
-    struct process_thread* process_thread =
-        list_entry(e, struct process_thread, process_thread_elem);
-    // if there is a thread that is not exited yet
-    // then exit main thread
-    if (!process_thread->thread_exited) {
-      struct process_thread* main_process_thread = get_main_process_thread();
-      main_process_thread->thread_exited = true;
-      cur_t->pcb->main_thread = NULL;
-      lock_release(&process_threads_lock);
-      sema_up(&main_process_thread->exit_wait);
-      thread_exit();
-    }
-  }
-
+  struct process_thread* main_process_thread = get_main_process_thread();
+  main_process_thread->thread_exited = true;
+  cur_t->pcb->main_thread = NULL;
   lock_release(&process_threads_lock);
+  sema_up(&main_process_thread->exit_wait);
+  thread_exit();
 }
 
 bool process_init_lock(uintptr_t user_lock_id) {

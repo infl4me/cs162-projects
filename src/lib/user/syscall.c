@@ -76,6 +76,11 @@ void exit(int status) {
   NOT_REACHED();
 }
 
+void soft_exit(int status) {
+  syscall1(SYS_SOFT_EXIT, status);
+  NOT_REACHED();
+}
+
 pid_t exec(const char* file) { return (pid_t)syscall1(SYS_EXEC, file); }
 
 int wait(pid_t pid) { return syscall1(SYS_WAIT, pid); }

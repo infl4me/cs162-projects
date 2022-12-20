@@ -36,21 +36,7 @@ static const struct test threads_tests[] = {
     {"mlfqs-fair-20", test_mlfqs_fair_20},
     {"mlfqs-nice-2", test_mlfqs_nice_2},
     {"mlfqs-nice-10", test_mlfqs_nice_10},
-    {"mlfqs-block", test_mlfqs_block},
-    {"smfs-starve-0", test_smfs_starve_0},
-    {"smfs-starve-1", test_smfs_starve_1},
-    {"smfs-starve-2", test_smfs_starve_2},
-    {"smfs-starve-4", test_smfs_starve_4},
-    {"smfs-starve-8", test_smfs_starve_8},
-    {"smfs-starve-16", test_smfs_starve_16},
-    {"smfs-starve-64", test_smfs_starve_64},
-    {"smfs-starve-256", test_smfs_starve_256},
-    {"smfs-prio-change", test_smfs_prio_change},
-    {"smfs-hierarchy-8", test_smfs_hierarchy_8},
-    {"smfs-hierarchy-16", test_smfs_hierarchy_16},
-    {"smfs-hierarchy-32", test_smfs_hierarchy_32},
-    {"smfs-hierarchy-64", test_smfs_hierarchy_64},
-    {"smfs-hierarchy-256", test_smfs_hierarchy_256}};
+    {"mlfqs-block", test_mlfqs_block}};
 
 /* Runs the threads test named NAME. */
 void run_threads_test(const char* name) {

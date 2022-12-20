@@ -38,19 +38,5 @@ extern test_func test_mlfqs_fair_20;
 extern test_func test_mlfqs_nice_2;
 extern test_func test_mlfqs_nice_10;
 extern test_func test_mlfqs_block;
-extern test_func test_smfs_starve_0;
-extern test_func test_smfs_starve_1;
-extern test_func test_smfs_starve_2;
-extern test_func test_smfs_starve_4;
-extern test_func test_smfs_starve_8;
-extern test_func test_smfs_starve_16;
-extern test_func test_smfs_starve_64;
-extern test_func test_smfs_starve_256;
-extern test_func test_smfs_prio_change;
-extern test_func test_smfs_hierarchy_8;
-extern test_func test_smfs_hierarchy_16;
-extern test_func test_smfs_hierarchy_32;
-extern test_func test_smfs_hierarchy_64;
-extern test_func test_smfs_hierarchy_256;
 
 #endif /* tests/threads/tests.h */

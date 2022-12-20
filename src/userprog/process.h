@@ -38,13 +38,17 @@ struct process {
   struct list process_threads;
   struct list process_locks;
   struct list process_semas;
+  bool process_exited;
+  pid_t pid;
 };
 
 struct process_child {
   struct list_elem process_child_elem;
   pid_t parent_pid;
   pid_t child_pid;
+  tid_t waiter_tid;
   int exit_status;            // exit status of child
+  bool process_child_exited;
   struct semaphore exit_wait; // semaphore of waiting exit of child
 };
 
@@ -81,6 +85,7 @@ fd register_process_file(struct file* file);
 fd allocate_fd(void);
 struct process_file* find_process_file(fd fd);
 bool remove_process_file(fd fd);
+void soft_process_exit(int status);
 
 bool process_release_lock(uintptr_t user_lock_id);
 bool process_acquire_lock(uintptr_t user_lock_id);

@@ -666,6 +666,10 @@ void thread_switch_tail(struct thread* prev) {
     ASSERT(prev != cur);
     palloc_free_page(prev);
   }
+
+  // if (cur->pcb && cur->pcb->exited) {
+  //   pthread_exit();
+  // }
 }
 
 /*
