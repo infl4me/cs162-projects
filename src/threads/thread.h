@@ -95,6 +95,7 @@ struct thread {
   int64_t sleeping_start;    /* Shows when did the thread put to sleep */
   struct list donations;     /* Donations given to thread */
   struct lock* blocking_lock; /* Reference to a lock the thread blocked by */
+  bool in_syscall;
 
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /* List element. */

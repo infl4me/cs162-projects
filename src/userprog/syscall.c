@@ -21,6 +21,9 @@ void check_args(uint32_t* args, int num_args);
 bool is_addr_valid(uint32_t* addr);
 bool is_char_pointer_valid(uint32_t* p);
 void check_args_filesys(uint32_t* args, int num_args);
+void syscall_release(void);
+void syscall_acquire(void);
+bool file_syscall_handler(struct intr_frame*);
 
 static struct lock syscall_lock;
 
@@ -30,7 +33,7 @@ void syscall_init(void) {
 }
 
 void exit_process(int status) {
-  lock_release(&syscall_lock);
+  syscall_release();
   process_exit(status);
 }
 
@@ -53,6 +56,18 @@ void check_args_filesys(uint32_t* args, int num_args) {
   if (!is_addr_valid(&args[num_args])) {
     exit_process(-1);
   }
+}
+
+void syscall_acquire() {
+  struct thread* t = thread_current();
+  t->in_syscall = true;
+  lock_acquire(&syscall_lock);
+}
+
+void syscall_release() {
+  struct thread* t = thread_current();
+  t->in_syscall = false;
+  lock_release(&syscall_lock);
 }
 
 bool is_pointer_valid(uint32_t* p) {
@@ -81,7 +96,7 @@ bool is_char_pointer_valid(uint32_t* p) {
 
 // handles file's syscalls
 // returns true if syscall was handled
-static bool file_syscall_handler(struct intr_frame* f) {
+bool file_syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
   struct file* file;
   struct process_file* process_file;
@@ -236,14 +251,14 @@ static bool file_syscall_handler(struct intr_frame* f) {
 static void syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
 
-  lock_acquire(&syscall_lock);
+  syscall_acquire();
 
   if (!is_pointer_valid(args)) {
     exit_process(-1);
   }
 
   if (file_syscall_handler(f)) {
-    lock_release(&syscall_lock);
+    syscall_release();
     return;
   }
 
@@ -279,10 +294,9 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_WAIT:
       check_args(args, 1);
 
-      lock_release(&syscall_lock);
+      syscall_release();
       f->eax = process_wait(args[1]);
-      lock_acquire(&syscall_lock);
-
+      syscall_acquire();
       break;
 
     // synch
@@ -294,16 +308,16 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_LOCK_ACQUIRE:
       check_args(args, 1);
 
-      lock_release(&syscall_lock);
+      syscall_release();
       f->eax = process_acquire_lock(args[1]);
-      lock_acquire(&syscall_lock);
+      syscall_acquire();
       break;
     case SYS_LOCK_RELEASE:
       check_args(args, 1);
 
-      lock_release(&syscall_lock);
+      syscall_release();
       f->eax = process_release_lock(args[1]);
-      lock_acquire(&syscall_lock);
+      syscall_acquire();
       break;
     case SYS_SEMA_INIT:
       check_args(args, 2);
@@ -313,16 +327,16 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_SEMA_UP:
       check_args(args, 1);
 
-      lock_release(&syscall_lock);
+      syscall_release();
       f->eax = process_sema_up(args[1]);
-      lock_acquire(&syscall_lock);
+      syscall_acquire();
       break;
     case SYS_SEMA_DOWN:
       check_args(args, 1);
 
-      lock_release(&syscall_lock);
+      syscall_release();
       f->eax = process_sema_down(args[1]);
-      lock_acquire(&syscall_lock);
+      syscall_acquire();
       break;
 
     // threads
@@ -339,12 +353,12 @@ static void syscall_handler(struct intr_frame* f) {
     case SYS_PT_JOIN:
       check_args(args, 1);
 
-      lock_release(&syscall_lock);
+      syscall_release();
       f->eax = pthread_join((tid_t)args[1]);
-      lock_acquire(&syscall_lock);
+      syscall_acquire();
       break;
     case SYS_PT_EXIT:
-      lock_release(&syscall_lock);
+      syscall_release();
       pthread_exit();
       NOT_REACHED();
       break;
@@ -364,15 +378,15 @@ static void syscall_handler(struct intr_frame* f) {
       f->eax = sys_sum_to_e(args[1]);
       break;
     case SYS_HALT:
-      lock_release(&syscall_lock);
+      syscall_release();
       shutdown_power_off();
       NOT_REACHED();
 
     default:
-      lock_release(&syscall_lock);
+      syscall_release();
       NOT_REACHED();
       break;
   }
 
-  lock_release(&syscall_lock);
+  syscall_release();
 }
