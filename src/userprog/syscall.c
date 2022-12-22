@@ -1,5 +1,6 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
@@ -14,15 +15,13 @@
 #include <float.h>
 
 static void syscall_handler(struct intr_frame*);
-bool is_pointer_valid(uint32_t* sp);
 void exit_process(int status);
 void soft_exit_process(int status);
-void check_args(uint32_t* args, int num_args);
-bool is_addr_valid(uint32_t* addr);
-bool is_char_pointer_valid(uint32_t* p);
 void syscall_release(void);
 void syscall_acquire(void);
 bool file_syscall_handler(struct intr_frame*);
+void validate_string_in_user_region(const char* string);
+void validate_buffer_in_user_region(const void* buffer, size_t length);
 
 static struct lock syscall_lock;
 
@@ -38,18 +37,6 @@ void exit_process(int status) {
 
 void soft_exit_process(int status) { soft_process_exit(status); }
 
-bool is_addr_valid(uint32_t* addr) {
-  // check that addr in userspace and mapped to page (prbly there is better way to check that addr is mapped)
-  return is_user_vaddr(addr) && pagedir_get_page(thread_current()->pcb->pagedir, addr) != NULL;
-}
-
-void check_args(uint32_t* args, int num_args) {
-  // cant use is_pointer_valid here, since simple args can hang over into another page as opposed to pointer arg
-  if (!is_addr_valid(&args[num_args])) {
-    exit_process(-1);
-  }
-}
-
 void syscall_acquire() {
   struct thread* t = thread_current();
   t->in_syscall = true;
@@ -62,38 +49,36 @@ void syscall_release() {
   lock_release(&syscall_lock);
 }
 
-bool is_pointer_valid(uint32_t* p) {
-  // check that p aligned and doesnt spans to another page, probably there is better way to do that
-  return is_addr_valid(p) && ((PGSIZE - pg_ofs(p)) >= sizeof(uint32_t*));
+/*
+ * This does not check that the buffer consists of only mapped pages; it merely
+ * checks the buffer exists entirely below PHYS_BASE.
+ */
+void validate_buffer_in_user_region(const void* buffer, size_t length) {
+  struct thread* cur_t = thread_current();
+  uintptr_t delta = PHYS_BASE - buffer;
+
+  if (!is_user_vaddr(buffer) || length > delta ||
+      (buffer != NULL && pagedir_get_page(cur_t->pcb->pagedir, buffer) == NULL)) {
+    exit_process(-1);
+  }
 }
 
-bool is_char_pointer_valid(uint32_t* p) {
-  if (!is_pointer_valid((uint32_t*)*p)) {
-    return false;
-  }
-
-  int max_length = PGSIZE - pg_ofs((char*)(*p));
-  int i;
-
-  for (i = 0; i < max_length; i++) {
-    if (p[i] == '\0') {
-      return true;
-    }
-  }
-
-  // at the moment we are at the boundary of two pages
-  // so, here, we recursively passing the start of second page to check
-  return is_char_pointer_valid(&p[i]);
+/*
+ * This does not check that the string consists of only mapped pages; it merely
+ * checks the string exists entirely below PHYS_BASE.
+ */
+void validate_string_in_user_region(const char* string) {
+  uintptr_t delta = PHYS_BASE - (const void*)string;
+  if (!is_user_vaddr(string) || strnlen(string, delta) == delta)
+    exit_process(-1);
 }
 
-static void syscall_handler(struct intr_frame* f) {
+void syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
 
   syscall_acquire();
 
-  if (!is_pointer_valid(args)) {
-    exit_process(-1);
-  }
+  validate_buffer_in_user_region(args, sizeof(uint32_t));
 
   if (file_syscall_handler(f)) {
     syscall_release();
@@ -103,34 +88,27 @@ static void syscall_handler(struct intr_frame* f) {
   switch (args[0]) {
     // processes
     case SYS_EXIT:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       exit_process(args[1]);
       NOT_REACHED();
 
       break;
     case SYS_SOFT_EXIT:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       exit_process(args[1]);
       NOT_REACHED();
 
       break;
     case SYS_EXEC:
-      check_args(args, 1);
-
-      if (!is_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[1]);
 
       f->eax = process_execute((char*)args[1]);
       break;
     case SYS_WAIT:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       syscall_release();
       f->eax = process_wait(args[1]);
@@ -139,38 +117,38 @@ static void syscall_handler(struct intr_frame* f) {
 
     // synch
     case SYS_LOCK_INIT:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       f->eax = process_init_lock(args[1]);
       break;
     case SYS_LOCK_ACQUIRE:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       syscall_release();
       f->eax = process_acquire_lock(args[1]);
       syscall_acquire();
       break;
     case SYS_LOCK_RELEASE:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       syscall_release();
       f->eax = process_release_lock(args[1]);
       syscall_acquire();
       break;
     case SYS_SEMA_INIT:
-      check_args(args, 2);
+      validate_buffer_in_user_region(&args[1], 2 * sizeof(uint32_t));
 
       f->eax = process_sema_init(args[1], args[2]);
       break;
     case SYS_SEMA_UP:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       syscall_release();
       f->eax = process_sema_up(args[1]);
       syscall_acquire();
       break;
     case SYS_SEMA_DOWN:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       syscall_release();
       f->eax = process_sema_down(args[1]);
@@ -179,17 +157,15 @@ static void syscall_handler(struct intr_frame* f) {
 
     // threads
     case SYS_PT_CREATE:
-      check_args(args, 3);
-
-      if (!is_pointer_valid(&args[1]) || !is_pointer_valid(&args[2]) ||
-          !is_pointer_valid(&args[3])) {
-        exit_process(-1);
-      }
+      validate_buffer_in_user_region(&args[1], 3 * sizeof(uint32_t));
+      validate_buffer_in_user_region((void*)args[1], sizeof(uint32_t));
+      validate_buffer_in_user_region((void*)args[2], sizeof(uint32_t));
+      validate_buffer_in_user_region((void*)args[3], sizeof(uint32_t));
 
       f->eax = pthread_execute((stub_fun)args[1], (pthread_fun)args[2], (void*)args[3]);
       break;
     case SYS_PT_JOIN:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       syscall_release();
       f->eax = pthread_join((tid_t)args[1]);
@@ -206,12 +182,12 @@ static void syscall_handler(struct intr_frame* f) {
 
     // other
     case SYS_PRACTICE:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       f->eax = args[1] + 1;
       break;
     case SYS_COMPUTE_E:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       f->eax = sys_sum_to_e(args[1]);
       break;
@@ -239,31 +215,20 @@ bool file_syscall_handler(struct intr_frame* f) {
   switch (args[0]) {
     // FILESYS SYSCALLS
     case SYS_CREATE:
-      check_args(args, 2);
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
+      validate_buffer_in_user_region(&args[1], 2 * sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[1]);
 
       f->eax = filesys_create((char*)args[1], args[2]);
-
       break;
     case SYS_REMOVE:
-      check_args(args, 1);
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[1]);
 
       f->eax = filesys_remove((char*)args[1]);
-
       break;
     case SYS_OPEN:
-      check_args(args, 1);
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[1]);
 
       file = filesys_open((char*)args[1]);
       if (file == NULL) {
@@ -272,25 +237,19 @@ bool file_syscall_handler(struct intr_frame* f) {
       }
 
       f->eax = register_process_file(file);
-
       break;
     case SYS_FILESIZE:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       process_file = find_process_file(args[1]);
 
       f->eax = process_file == NULL ? 0 : file_length(process_file->file);
-
       break;
     case SYS_READ:
-      check_args(args, 3);
-
-      if (!is_pointer_valid((uint32_t*)args[2])) {
-        exit_process(-1);
-      }
+      validate_buffer_in_user_region(&args[1], 3 * sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[2]);
 
       if (args[1] == STDIN_FILENO) {
-
         uint8_t* buffer = (uint8_t*)args[2];
         int c;
 
@@ -319,11 +278,8 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_WRITE:
-      check_args(args, 3);
-
-      if (!is_pointer_valid((uint32_t*)args[2])) {
-        // exit_process(-1);
-      }
+      validate_buffer_in_user_region(&args[1], 3 * sizeof(uint32_t));
+      validate_buffer_in_user_region((void*)args[2], sizeof(uint32_t));
 
       if (args[1] == STDOUT_FILENO) {
         // if write target is stdout, redirect it to kernel console
@@ -342,7 +298,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_SEEK:
-      check_args(args, 2);
+      validate_buffer_in_user_region(&args[1], 2 * sizeof(uint32_t));
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
@@ -353,7 +309,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_TELL:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
@@ -365,7 +321,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_CLOSE:
-      check_args(args, 1);
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
