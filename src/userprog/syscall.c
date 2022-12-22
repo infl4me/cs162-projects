@@ -20,7 +20,6 @@ void soft_exit_process(int status);
 void check_args(uint32_t* args, int num_args);
 bool is_addr_valid(uint32_t* addr);
 bool is_char_pointer_valid(uint32_t* p);
-void check_args_filesys(uint32_t* args, int num_args);
 void syscall_release(void);
 void syscall_acquire(void);
 bool file_syscall_handler(struct intr_frame*);
@@ -45,13 +44,6 @@ bool is_addr_valid(uint32_t* addr) {
 }
 
 void check_args(uint32_t* args, int num_args) {
-  // cant use is_pointer_valid here, since simple args can hang over into another page as opposed to pointer arg
-  if (!is_addr_valid(&args[num_args])) {
-    exit_process(-1);
-  }
-}
-
-void check_args_filesys(uint32_t* args, int num_args) {
   // cant use is_pointer_valid here, since simple args can hang over into another page as opposed to pointer arg
   if (!is_addr_valid(&args[num_args])) {
     exit_process(-1);
@@ -247,7 +239,7 @@ bool file_syscall_handler(struct intr_frame* f) {
   switch (args[0]) {
     // FILESYS SYSCALLS
     case SYS_CREATE:
-      check_args_filesys(args, 2);
+      check_args(args, 2);
 
       if (!is_char_pointer_valid(&args[1])) {
         exit_process(-1);
@@ -257,7 +249,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_REMOVE:
-      check_args_filesys(args, 1);
+      check_args(args, 1);
 
       if (!is_char_pointer_valid(&args[1])) {
         exit_process(-1);
@@ -267,7 +259,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_OPEN:
-      check_args_filesys(args, 1);
+      check_args(args, 1);
 
       if (!is_char_pointer_valid(&args[1])) {
         exit_process(-1);
@@ -283,7 +275,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_FILESIZE:
-      check_args_filesys(args, 1);
+      check_args(args, 1);
 
       process_file = find_process_file(args[1]);
 
@@ -291,7 +283,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_READ:
-      check_args_filesys(args, 3);
+      check_args(args, 3);
 
       if (!is_pointer_valid((uint32_t*)args[2])) {
         exit_process(-1);
@@ -327,7 +319,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_WRITE:
-      check_args_filesys(args, 3);
+      check_args(args, 3);
 
       if (!is_pointer_valid((uint32_t*)args[2])) {
         // exit_process(-1);
@@ -350,7 +342,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_SEEK:
-      check_args_filesys(args, 2);
+      check_args(args, 2);
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
@@ -361,7 +353,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_TELL:
-      check_args_filesys(args, 1);
+      check_args(args, 1);
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
@@ -373,7 +365,7 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       break;
     case SYS_CLOSE:
-      check_args_filesys(args, 1);
+      check_args(args, 1);
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
