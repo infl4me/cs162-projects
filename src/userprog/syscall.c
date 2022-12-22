@@ -94,6 +94,149 @@ bool is_char_pointer_valid(uint32_t* p) {
   return is_char_pointer_valid(&p[i]);
 }
 
+static void syscall_handler(struct intr_frame* f) {
+  uint32_t* args = ((uint32_t*)f->esp);
+
+  syscall_acquire();
+
+  if (!is_pointer_valid(args)) {
+    exit_process(-1);
+  }
+
+  if (file_syscall_handler(f)) {
+    syscall_release();
+    return;
+  }
+
+  switch (args[0]) {
+    // processes
+    case SYS_EXIT:
+      check_args(args, 1);
+
+      exit_process(args[1]);
+      NOT_REACHED();
+
+      break;
+    case SYS_SOFT_EXIT:
+      check_args(args, 1);
+
+      exit_process(args[1]);
+      NOT_REACHED();
+
+      break;
+    case SYS_EXEC:
+      check_args(args, 1);
+
+      if (!is_pointer_valid(&args[1])) {
+        exit_process(-1);
+      }
+
+      if (!is_char_pointer_valid(&args[1])) {
+        exit_process(-1);
+      }
+
+      f->eax = process_execute((char*)args[1]);
+      break;
+    case SYS_WAIT:
+      check_args(args, 1);
+
+      syscall_release();
+      f->eax = process_wait(args[1]);
+      syscall_acquire();
+      break;
+
+    // synch
+    case SYS_LOCK_INIT:
+      check_args(args, 1);
+
+      f->eax = process_init_lock(args[1]);
+      break;
+    case SYS_LOCK_ACQUIRE:
+      check_args(args, 1);
+
+      syscall_release();
+      f->eax = process_acquire_lock(args[1]);
+      syscall_acquire();
+      break;
+    case SYS_LOCK_RELEASE:
+      check_args(args, 1);
+
+      syscall_release();
+      f->eax = process_release_lock(args[1]);
+      syscall_acquire();
+      break;
+    case SYS_SEMA_INIT:
+      check_args(args, 2);
+
+      f->eax = process_sema_init(args[1], args[2]);
+      break;
+    case SYS_SEMA_UP:
+      check_args(args, 1);
+
+      syscall_release();
+      f->eax = process_sema_up(args[1]);
+      syscall_acquire();
+      break;
+    case SYS_SEMA_DOWN:
+      check_args(args, 1);
+
+      syscall_release();
+      f->eax = process_sema_down(args[1]);
+      syscall_acquire();
+      break;
+
+    // threads
+    case SYS_PT_CREATE:
+      check_args(args, 3);
+
+      if (!is_pointer_valid(&args[1]) || !is_pointer_valid(&args[2]) ||
+          !is_pointer_valid(&args[3])) {
+        exit_process(-1);
+      }
+
+      f->eax = pthread_execute((stub_fun)args[1], (pthread_fun)args[2], (void*)args[3]);
+      break;
+    case SYS_PT_JOIN:
+      check_args(args, 1);
+
+      syscall_release();
+      f->eax = pthread_join((tid_t)args[1]);
+      syscall_acquire();
+      break;
+    case SYS_PT_EXIT:
+      syscall_release();
+      pthread_exit();
+      NOT_REACHED();
+      break;
+    case SYS_GET_TID:
+      f->eax = thread_current()->tid;
+      break;
+
+    // other
+    case SYS_PRACTICE:
+      check_args(args, 1);
+
+      f->eax = args[1] + 1;
+      break;
+    case SYS_COMPUTE_E:
+      check_args(args, 1);
+
+      f->eax = sys_sum_to_e(args[1]);
+      break;
+    case SYS_HALT:
+      syscall_release();
+      shutdown_power_off();
+      NOT_REACHED();
+
+    default:
+      syscall_release();
+      NOT_REACHED();
+      break;
+  }
+
+  syscall_release();
+}
+
 // handles file's syscalls
 // returns true if syscall was handled
 bool file_syscall_handler(struct intr_frame* f) {
@@ -246,147 +389,4 @@ bool file_syscall_handler(struct intr_frame* f) {
   }
 
   return 1;
-}
-
-static void syscall_handler(struct intr_frame* f) {
-  uint32_t* args = ((uint32_t*)f->esp);
-
-  syscall_acquire();
-
-  if (!is_pointer_valid(args)) {
-    exit_process(-1);
-  }
-
-  if (file_syscall_handler(f)) {
-    syscall_release();
-    return;
-  }
-
-  switch (args[0]) {
-    // processes
-    case SYS_EXIT:
-      check_args(args, 1);
-
-      exit_process(args[1]);
-      NOT_REACHED();
-
-      break;
-    case SYS_SOFT_EXIT:
-      check_args(args, 1);
-
-      exit_process(args[1]);
-      NOT_REACHED();
-
-      break;
-    case SYS_EXEC:
-      check_args(args, 1);
-
-      if (!is_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      if (!is_char_pointer_valid(&args[1])) {
-        exit_process(-1);
-      }
-
-      f->eax = process_execute((char*)args[1]);
-      break;
-    case SYS_WAIT:
-      check_args(args, 1);
-
-      syscall_release();
-      f->eax = process_wait(args[1]);
-      syscall_acquire();
-      break;
-
-    // synch
-    case SYS_LOCK_INIT:
-      check_args(args, 1);
-
-      f->eax = process_init_lock(args[1]);
-      break;
-    case SYS_LOCK_ACQUIRE:
-      check_args(args, 1);
-
-      syscall_release();
-      f->eax = process_acquire_lock(args[1]);
-      syscall_acquire();
-      break;
-    case SYS_LOCK_RELEASE:
-      check_args(args, 1);
-
-      syscall_release();
-      f->eax = process_release_lock(args[1]);
-      syscall_acquire();
-      break;
-    case SYS_SEMA_INIT:
-      check_args(args, 2);
-
-      f->eax = process_sema_init(args[1], args[2]);
-      break;
-    case SYS_SEMA_UP:
-      check_args(args, 1);
-
-      syscall_release();
-      f->eax = process_sema_up(args[1]);
-      syscall_acquire();
-      break;
-    case SYS_SEMA_DOWN:
-      check_args(args, 1);
-
-      syscall_release();
-      f->eax = process_sema_down(args[1]);
-      syscall_acquire();
-      break;
-
-    // threads
-    case SYS_PT_CREATE:
-      check_args(args, 3);
-
-      if (!is_pointer_valid(&args[1]) || !is_pointer_valid(&args[2]) ||
-          !is_pointer_valid(&args[3])) {
-        exit_process(-1);
-      }
-
-      f->eax = pthread_execute((stub_fun)args[1], (pthread_fun)args[2], (void*)args[3]);
-      break;
-    case SYS_PT_JOIN:
-      check_args(args, 1);
-
-      syscall_release();
-      f->eax = pthread_join((tid_t)args[1]);
-      syscall_acquire();
-      break;
-    case SYS_PT_EXIT:
-      syscall_release();
-      pthread_exit();
-      NOT_REACHED();
-      break;
-    case SYS_GET_TID:
-      f->eax = thread_current()->tid;
-      break;
-
-    // other
-    case SYS_PRACTICE:
-      check_args(args, 1);
-
-      f->eax = args[1] + 1;
-      break;
-    case SYS_COMPUTE_E:
-      check_args(args, 1);
-
-      f->eax = sys_sum_to_e(args[1]);
-      break;
-    case SYS_HALT:
-      syscall_release();
-      shutdown_power_off();
-      NOT_REACHED();
-
-    default:
-      syscall_release();
-      NOT_REACHED();
-      break;
-  }
-
-  syscall_release();
 }
