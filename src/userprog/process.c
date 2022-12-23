@@ -493,6 +493,8 @@ void process_exit(int status) {
   lock_acquire(&process_threads_lock);
   cur_t->pcb->exit_status = status;
   cur_t->pcb->process_exited = true;
+
+  // exit process only if it is the last process thread
   if (is_there_running_process_thread()) {
     lock_release(&process_threads_lock);
     pthread_exit();
@@ -566,10 +568,8 @@ void process_exit(int status) {
     }
   }
 
-  // TODO: need to exit all threads of the current process before freeing process_threads
   // free process_threads list structures
   {
-    lock_acquire(&process_threads_lock);
     struct list_elem *elem, *next;
     for (elem = list_begin(&cur_t->pcb->process_threads);
          elem != list_end(&cur_t->pcb->process_threads); elem = next) {
@@ -580,11 +580,23 @@ void process_exit(int status) {
       list_remove(&process_thread->process_thread_elem);
       free(process_thread);
     }
-    lock_release(&process_threads_lock);
   }
 
-  // // TODO: need to exit all threads of the current process before freeing process_locks
-  // // free process_locks list structures
+  // free process_free_stack_pages list structures
+  {
+    struct list_elem *elem, *next;
+    for (elem = list_begin(&cur_t->pcb->process_free_stack_pages);
+         elem != list_end(&cur_t->pcb->process_free_stack_pages); elem = next) {
+      next = list_next(elem);
+      struct process_free_stack_page* process_free_stack_page =
+          list_entry(elem, struct process_free_stack_page, process_free_stack_page_elem);
+
+      list_remove(&process_free_stack_page->process_free_stack_page_elem);
+      free(process_free_stack_page);
+    }
+  }
+
+  // free process_locks list structures
   {
     struct list_elem *elem, *next;
     for (elem = list_begin(&cur_t->pcb->process_locks);
@@ -597,8 +609,7 @@ void process_exit(int status) {
     }
   }
 
-  // // TODO: need to exit all threads of the current process before freeing process_semas
-  // // free process_semas list structures
+  // free process_semas list structures
   {
     struct list_elem *elem, *next;
     for (elem = list_begin(&cur_t->pcb->process_semas);
@@ -1207,6 +1218,7 @@ void pthread_exit(void) {
 
   lock_acquire(&process_threads_lock);
 
+  // exit process if it is the last process thread
   if (!is_there_running_process_thread()) {
     lock_release(&process_threads_lock);
     process_exit(cur_t->pcb->exit_status);
