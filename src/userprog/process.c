@@ -32,7 +32,7 @@ static struct lock process_semas_lock;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
-bool setup_thread(void** esp, int thread_id);
+bool setup_thread(void** esp, uint32_t page_number);
 struct process_thread* get_main_process_thread(void);
 struct process_thread* get_unexited_process_thread(void);
 bool is_there_running_process_thread(void);
@@ -323,10 +323,12 @@ static void start_process(void* args_) {
     new_pcb->pid = t->tid;
     new_pcb->parent_pid = args->parent_pid;
     new_pcb->process_threads_count = 0;
+    new_pcb->process_stack_pages_count = 0;
     list_init(&new_pcb->process_files);
     list_init(&new_pcb->process_threads);
     list_init(&new_pcb->process_locks);
     list_init(&new_pcb->process_semas);
+    list_init(&new_pcb->process_free_stack_pages);
 
     process_thread->tid = t->tid;
     process_thread->thread_exited = false;
@@ -945,6 +947,22 @@ static bool install_page(void* upage, void* kpage, bool writable) {
           pagedir_set_page(t->pcb->pagedir, upage, kpage, writable));
 }
 
+static bool uninstall_stack_page(uint32_t page_number) {
+  struct thread* t = thread_current();
+
+  void* upage = (uint8_t*)PHYS_BASE - (PGSIZE * 2 * page_number) - PGSIZE;
+  uint8_t* kpage = pagedir_get_page(t->pcb->pagedir, upage);
+
+  if (kpage == NULL) {
+    return false;
+  }
+
+  palloc_free_page(kpage);
+  pagedir_clear_page(t->pcb->pagedir, upage);
+
+  return true;
+}
+
 /* Returns true if t is the main thread of the process p */
 bool is_main_thread(struct thread* t, struct process* p) { return p->main_thread == t; }
 
@@ -959,19 +977,15 @@ pid_t get_pid(struct process* p) { return (pid_t)p->main_thread->tid; }
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. You may find it necessary to change the
    function signature. */
-bool setup_thread(void** esp, int thread_id) {
+bool setup_thread(void** esp, uint32_t page_number) {
   uint8_t* kpage;
   bool success = false;
-
-  ASSERT(thread_id > 0);
-
-  int i = thread_id;
 
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
     // leave every second page empty for now
     // so if a thread's stack is overflowed it will access an empty page with page fault
-    uint8_t* base = (uint8_t*)PHYS_BASE - (PGSIZE * 2 * i);
+    uint8_t* base = (uint8_t*)PHYS_BASE - (PGSIZE * 2 * page_number);
 
     // use base - PGSIZE because installation of a page goes in reverse way
     // as opposed to stack growth
@@ -1073,11 +1087,23 @@ static void start_pthread(void* args_) {
   if_.eip = (void*)args->sf;
 
   lock_acquire(&process_threads_lock);
+
+  if (!list_empty(&t->pcb->process_free_stack_pages)) {
+    struct process_free_stack_page* process_free_stack_page =
+        list_entry(list_pop_front(&t->pcb->process_free_stack_pages),
+                   struct process_free_stack_page, process_free_stack_page_elem);
+    t->stack_page_number = process_free_stack_page->page_number;
+    free(process_free_stack_page);
+  } else {
+    t->stack_page_number = ++t->pcb->process_stack_pages_count;
+  }
+
   t->process_thread_id = ++t->pcb->process_threads_count;
   list_push_back(&args->pcb->process_threads, &process_thread->process_thread_elem);
+
   lock_release(&process_threads_lock);
 
-  success = setup_thread(&if_.esp, t->process_thread_id);
+  success = setup_thread(&if_.esp, t->stack_page_number);
 
   if (!success) {
     free(process_thread);
@@ -1197,8 +1223,22 @@ void pthread_exit(void) {
 
   process_thread->thread_exited = true;
 
+  struct process_free_stack_page* process_free_stack_page =
+      malloc(sizeof(struct process_free_stack_page));
+  if (process_free_stack_page == NULL) {
+    lock_release(&process_threads_lock);
+    process_exit(cur_t->pcb->exit_status);
+  }
+
+  ASSERT(uninstall_stack_page(cur_t->stack_page_number));
+
+  process_free_stack_page->page_number = cur_t->stack_page_number;
+  list_push_back(&cur_t->pcb->process_free_stack_pages,
+                 &process_free_stack_page->process_free_stack_page_elem);
+
   lock_release(&process_threads_lock);
   sema_up(&process_thread->exit_wait);
+
   thread_exit();
 }
 

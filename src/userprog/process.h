@@ -38,10 +38,12 @@ struct process {
   struct list process_threads;
   struct list process_locks;
   struct list process_semas;
+  struct list process_free_stack_pages;
   bool process_exited;
   int exit_status;
   pid_t pid;
   uint32_t process_threads_count;
+  uint32_t process_stack_pages_count;
 };
 
 struct process_child {
@@ -66,6 +68,11 @@ struct process_thread {
   tid_t tid;
   struct thread* thread_waiter; // pointer to the thread that waits on this process_thread (via join)
   bool thread_exited; // indicates that thread has exited
+};
+
+struct process_free_stack_page {
+  struct list_elem process_free_stack_page_elem;
+  uint32_t page_number;
 };
 
 void userprog_init(void);

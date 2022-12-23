@@ -11,6 +11,7 @@
 #include "devices/timer.h"
 #ifdef USERPROG
 #include "userprog/gdt.h"
+#include "userprog/process.h"
 #endif
 
 /* Programmable Interrupt Controller (PIC) registers.
