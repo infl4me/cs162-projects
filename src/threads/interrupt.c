@@ -352,6 +352,10 @@ void intr_handler(struct intr_frame* frame) {
     in_external_intr = false;
     pic_end_of_interrupt(frame->vec_no);
 
+    if (is_trap_from_userspace(frame)) {
+      process_intr_exit();
+    }
+
     if (yield_on_return)
       thread_yield();
   }

@@ -39,7 +39,9 @@ struct process {
   struct list process_locks;
   struct list process_semas;
   bool process_exited;
+  int exit_status;
   pid_t pid;
+  uint32_t process_threads_count;
 };
 
 struct process_child {
@@ -93,5 +95,6 @@ bool process_init_lock(uintptr_t user_lock_id);
 bool process_sema_up(uintptr_t user_sema_id);
 bool process_sema_down(uintptr_t user_sema_id);
 bool process_sema_init(uintptr_t user_sema_id, int value);
+void process_intr_exit(void);
 
 #endif /* userprog/process.h */

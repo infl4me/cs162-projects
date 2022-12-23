@@ -35,7 +35,10 @@ void exit_process(int status) {
   process_exit(status);
 }
 
-void soft_exit_process(int status) { soft_process_exit(status); }
+void soft_exit_process(int status) {
+  syscall_release();
+  soft_process_exit(status);
+}
 
 void syscall_acquire() {
   struct thread* t = thread_current();
@@ -92,14 +95,12 @@ void syscall_handler(struct intr_frame* f) {
 
       exit_process(args[1]);
       NOT_REACHED();
-
       break;
     case SYS_SOFT_EXIT:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
-      exit_process(args[1]);
+      soft_exit_process(args[1]);
       NOT_REACHED();
-
       break;
     case SYS_EXEC:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
