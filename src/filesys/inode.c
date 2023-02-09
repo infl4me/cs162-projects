@@ -7,6 +7,17 @@
 #include "threads/malloc.h"
 #include "filesys/inode.h"
 
+struct cache_entry {
+  bool dirty;
+  block_sector_t sector;
+  uint8_t data[BLOCK_SECTOR_SIZE];
+};
+
+void cache_init(void);
+bool cache_is_entry_empty(struct cache_entry*);
+void cache_read_sector(block_sector_t sector, void* buffer, int sector_ofs, int chunk_size);
+void cache_write_sector(block_sector_t sector, void* buffer);
+
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 
@@ -30,8 +41,14 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
    returns the same `struct inode'. */
 static struct list open_inodes;
 
+static uint8_t CACHE_MAX_SIZE = 64;
+static struct cache_entry* cache;
+
 /* Initializes the inode module. */
-void inode_init(void) { list_init(&open_inodes); }
+void inode_init(void) {
+  list_init(&open_inodes);
+  cache_init();
+}
 
 /* Initializes an inode with LENGTH bytes of data and
    writes the new inode to sector SECTOR on the file system
@@ -96,7 +113,7 @@ struct inode* inode_open(block_sector_t sector) {
   inode->open_cnt = 1;
   inode->deny_write_cnt = 0;
   inode->removed = false;
-  block_read(fs_device, inode->sector, &inode->data);
+  cache_read_sector(inode->sector, &inode->data, 0, BLOCK_SECTOR_SIZE);
   return inode;
 }
 
@@ -146,7 +163,6 @@ void inode_remove(struct inode* inode) {
 off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset) {
   uint8_t* buffer = buffer_;
   off_t bytes_read = 0;
-  uint8_t* bounce = NULL;
 
   while (size > 0) {
     /* Disk sector to read, starting byte offset within sector. */
@@ -163,27 +179,13 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
     if (chunk_size <= 0)
       break;
 
-    if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE) {
-      /* Read full sector directly into caller's buffer. */
-      block_read(fs_device, sector_idx, buffer + bytes_read);
-    } else {
-      /* Read sector into bounce buffer, then partially copy
-             into caller's buffer. */
-      if (bounce == NULL) {
-        bounce = malloc(BLOCK_SECTOR_SIZE);
-        if (bounce == NULL)
-          break;
-      }
-      block_read(fs_device, sector_idx, bounce);
-      memcpy(buffer + bytes_read, bounce + sector_ofs, chunk_size);
-    }
+    cache_read_sector(sector_idx, buffer + bytes_read, sector_ofs, chunk_size);
 
     /* Advance. */
     size -= chunk_size;
     offset += chunk_size;
     bytes_read += chunk_size;
   }
-  free(bounce);
 
   return bytes_read;
 }
@@ -231,7 +233,7 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
              we're writing, then we need to read in the sector
              first.  Otherwise we start with a sector of all zeros. */
       if (sector_ofs > 0 || chunk_size < sector_left)
-        block_read(fs_device, sector_idx, bounce);
+        cache_read_sector(sector_idx, bounce, 0, BLOCK_SECTOR_SIZE);
       else
         memset(bounce, 0, BLOCK_SECTOR_SIZE);
       memcpy(bounce + sector_ofs, buffer + bytes_written, chunk_size);
@@ -266,3 +268,46 @@ void inode_allow_write(struct inode* inode) {
 
 /* Returns the length, in bytes, of INODE's data. */
 off_t inode_length(const struct inode* inode) { return inode->data.length; }
+
+void cache_init() {
+  cache = calloc(CACHE_MAX_SIZE, sizeof(struct cache_entry));
+  ASSERT(cache != NULL);
+}
+
+bool cache_is_entry_empty(struct cache_entry* cache_entry) { return cache_entry->sector == 0; }
+
+void cache_read_sector(block_sector_t sector, void* buffer, int sector_ofs, int chunk_size) {
+  struct cache_entry cache_entry = cache[sector % CACHE_MAX_SIZE];
+
+  // sector already in cache, just copy it into the buffer
+  // if (cache_entry.sector == sector) {
+  //   memcpy(buffer, cache_entry.data + sector_ofs, chunk_size);
+  //   return;
+  // }
+
+  // // // evict cache entry if it's dirty
+  if (!cache_is_entry_empty(&cache_entry) && cache_entry.dirty) {
+    ASSERT(0);
+    block_write(fs_device, cache_entry.sector, &cache_entry.data);
+  }
+
+  // load sector from the disk into cache, then copy it into the buffer
+  block_read(fs_device, sector, cache_entry.data);
+  memcpy(buffer, cache_entry.data + sector_ofs, chunk_size);
+
+  cache_entry.sector = sector;
+  cache_entry.dirty = false;
+}
+
+void cache_write_sector(block_sector_t sector, void* buffer) {
+  struct cache_entry cache_entry = cache[sector % CACHE_MAX_SIZE];
+
+  // evict cache entry if it's dirty
+  if (!cache_is_entry_empty(&cache_entry) && cache_entry.dirty) {
+    block_write(fs_device, cache_entry.sector, &cache_entry.data);
+  }
+
+  memcpy(buffer, &cache_entry.data, BLOCK_SECTOR_SIZE);
+  cache_entry.dirty = true;
+  cache_entry.sector = sector;
+}
