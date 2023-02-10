@@ -9,14 +9,14 @@
 
 struct cache_entry {
   bool dirty;
+  bool warm;
   block_sector_t sector;
   uint8_t data[BLOCK_SECTOR_SIZE];
 };
 
 void cache_init(void);
-bool cache_is_entry_empty(struct cache_entry*);
 void cache_read_sector(block_sector_t sector, void* buffer, int sector_ofs, int chunk_size);
-void cache_write_sector(block_sector_t sector, void* buffer);
+void cache_write_sector(block_sector_t sector, const void* buffer);
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
@@ -71,13 +71,13 @@ bool inode_create(block_sector_t sector, off_t length) {
     disk_inode->length = length;
     disk_inode->magic = INODE_MAGIC;
     if (free_map_allocate(sectors, &disk_inode->start)) {
-      block_write(fs_device, sector, disk_inode);
+      cache_write_sector(sector, disk_inode);
       if (sectors > 0) {
         static char zeros[BLOCK_SECTOR_SIZE];
         size_t i;
 
         for (i = 0; i < sectors; i++)
-          block_write(fs_device, disk_inode->start + i, zeros);
+          cache_write_sector(disk_inode->start + i, zeros);
       }
       success = true;
     }
@@ -220,7 +220,7 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
 
     if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE) {
       /* Write full sector directly to disk. */
-      block_write(fs_device, sector_idx, buffer + bytes_written);
+      cache_write_sector(sector_idx, buffer + bytes_written);
     } else {
       /* We need a bounce buffer. */
       if (bounce == NULL) {
@@ -237,7 +237,7 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
       else
         memset(bounce, 0, BLOCK_SECTOR_SIZE);
       memcpy(bounce + sector_ofs, buffer + bytes_written, chunk_size);
-      block_write(fs_device, sector_idx, bounce);
+      cache_write_sector(sector_idx, bounce);
     }
 
     /* Advance. */
@@ -274,40 +274,73 @@ void cache_init() {
   ASSERT(cache != NULL);
 }
 
-bool cache_is_entry_empty(struct cache_entry* cache_entry) { return cache_entry->sector == 0; }
-
 void cache_read_sector(block_sector_t sector, void* buffer, int sector_ofs, int chunk_size) {
-  struct cache_entry cache_entry = cache[sector % CACHE_MAX_SIZE];
+  struct cache_entry* cache_entry = &cache[sector % CACHE_MAX_SIZE];
+
+  if (!cache_entry->warm) {
+    block_read(fs_device, sector, cache_entry->data);
+    cache_entry->sector = sector;
+    cache_entry->warm = true;
+    cache_entry->dirty = false;
+  }
 
   // sector already in cache, just copy it into the buffer
-  // if (cache_entry.sector == sector) {
-  //   memcpy(buffer, cache_entry.data + sector_ofs, chunk_size);
-  //   return;
-  // }
-
-  // // // evict cache entry if it's dirty
-  if (!cache_is_entry_empty(&cache_entry) && cache_entry.dirty) {
-    ASSERT(0);
-    block_write(fs_device, cache_entry.sector, &cache_entry.data);
+  if (cache_entry->sector == sector) {
+    memcpy(buffer, cache_entry->data + sector_ofs, chunk_size);
+    return;
   }
 
-  // load sector from the disk into cache, then copy it into the buffer
-  block_read(fs_device, sector, cache_entry.data);
-  memcpy(buffer, cache_entry.data + sector_ofs, chunk_size);
+  // if sector is different and cache is dirty, evict the cache entry
+  // load current sector into the cache
+  // write current cache entry into the buffer
+  if (cache_entry->dirty) {
+    block_write(fs_device, cache_entry->sector, cache_entry->data);
+  }
 
-  cache_entry.sector = sector;
-  cache_entry.dirty = false;
+  block_read(fs_device, sector, cache_entry->data);
+  memcpy(buffer, cache_entry->data + sector_ofs, chunk_size);
+
+  cache_entry->sector = sector;
+  cache_entry->dirty = false;
 }
 
-void cache_write_sector(block_sector_t sector, void* buffer) {
-  struct cache_entry cache_entry = cache[sector % CACHE_MAX_SIZE];
+void cache_write_sector(block_sector_t sector, const void* buffer) {
+  struct cache_entry* cache_entry = &cache[sector % CACHE_MAX_SIZE];
 
-  // evict cache entry if it's dirty
-  if (!cache_is_entry_empty(&cache_entry) && cache_entry.dirty) {
-    block_write(fs_device, cache_entry.sector, &cache_entry.data);
+  // if cache empty load sector
+  if (!cache_entry->warm) {
+    block_read(fs_device, sector, cache_entry->data);
+    cache_entry->sector = sector;
+    cache_entry->warm = true;
+    cache_entry->dirty = false;
   }
 
-  memcpy(buffer, &cache_entry.data, BLOCK_SECTOR_SIZE);
-  cache_entry.dirty = true;
-  cache_entry.sector = sector;
+  // if sector matches write right into the cache and return
+  if (cache_entry->sector == sector) {
+    memcpy(cache_entry->data, buffer, BLOCK_SECTOR_SIZE);
+    cache_entry->dirty = true;
+    return;
+  }
+
+  // if sector is different and cache is dirty, evict the cache entry
+  // write current sector into the cache
+  // write buffer onto cache entry
+  if (cache_entry->dirty) {
+    block_write(fs_device, cache_entry->sector, cache_entry->data);
+  }
+
+  block_read(fs_device, sector, cache_entry->data);
+  memcpy(cache_entry->data, buffer, BLOCK_SECTOR_SIZE);
+  cache_entry->sector = sector;
+  cache_entry->dirty = true;
+}
+
+void cache_flush() {
+  for (size_t i = 0; i < CACHE_MAX_SIZE; i++) {
+    struct cache_entry* cache_entry = &cache[i];
+    if (cache_entry->dirty) {
+      block_write(fs_device, cache_entry->sector, cache_entry->data);
+      cache_entry->dirty = false;
+    }
+  }
 }
