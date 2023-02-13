@@ -8,13 +8,18 @@
 
 struct bitmap;
 
+#define DIRECT_SECTORS_COUNT 126
+#define INDIRECT_SECTORS_COUNT 0
+#define SINGLE_BLOCK_SECTORS_COUNT 128
+
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk {
-  block_sector_t start; /* First data sector. */
+  // block_sector_t start; /* First data sector. */
   off_t length;         /* File size in bytes. */
   unsigned magic;       /* Magic number. */
-  uint32_t unused[125]; /* Not used. */
+  block_sector_t sector_pointers[DIRECT_SECTORS_COUNT]; /* Direct sector pointers */
+  block_sector_t indirect_sector_pointers[INDIRECT_SECTORS_COUNT]; /* Indirect sector pointers */
 };
 
 /* In-memory inode. */

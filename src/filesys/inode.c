@@ -31,10 +31,18 @@ static inline size_t bytes_to_sectors(off_t size) { return DIV_ROUND_UP(size, BL
    POS. */
 static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
   ASSERT(inode != NULL);
-  if (pos < inode->data.length)
-    return inode->data.start + pos / BLOCK_SECTOR_SIZE;
-  else
+
+  if (pos >= inode->data.length) {
     return -1;
+  }
+
+  block_sector_t sector = pos / BLOCK_SECTOR_SIZE;
+
+  if (sector < DIRECT_SECTORS_COUNT) {
+    return inode->data.sector_pointers[sector];
+  }
+
+  return -1;
 }
 
 /* List of open inodes, so that opening a single inode twice
@@ -57,7 +65,6 @@ void inode_init(void) {
    Returns false if memory or disk allocation fails. */
 bool inode_create(block_sector_t sector, off_t length) {
   struct inode_disk* disk_inode = NULL;
-  bool success = false;
 
   ASSERT(length >= 0);
 
@@ -66,24 +73,38 @@ bool inode_create(block_sector_t sector, off_t length) {
   ASSERT(sizeof *disk_inode == BLOCK_SECTOR_SIZE);
 
   disk_inode = calloc(1, sizeof *disk_inode);
-  if (disk_inode != NULL) {
-    size_t sectors = bytes_to_sectors(length);
-    disk_inode->length = length;
-    disk_inode->magic = INODE_MAGIC;
-    if (free_map_allocate(sectors, &disk_inode->start)) {
-      cache_write_sector(sector, disk_inode, 0, BLOCK_SECTOR_SIZE);
-      if (sectors > 0) {
-        static char zeros[BLOCK_SECTOR_SIZE];
-        size_t i;
 
-        for (i = 0; i < sectors; i++)
-          cache_write_sector(disk_inode->start + i, zeros, 0, BLOCK_SECTOR_SIZE);
-      }
-      success = true;
-    }
-    free(disk_inode);
+  if (disk_inode == NULL) {
+    return false;
   }
-  return success;
+
+  size_t sectors = bytes_to_sectors(length);
+  size_t indirect_sectors = 0;
+
+  if ((sectors > DIRECT_SECTORS_COUNT)) {
+    ASSERT(0);
+  }
+
+  disk_inode->length = length;
+  disk_inode->magic = INODE_MAGIC;
+
+  if (free_map_allocate(sectors, disk_inode->sector_pointers)) {
+    if (sectors > 0) {
+      static char zeros[BLOCK_SECTOR_SIZE];
+      size_t i;
+
+      for (i = 0; i < sectors; i++) {
+        disk_inode->sector_pointers[i] = disk_inode->sector_pointers[0] + i;
+        cache_write_sector(disk_inode->sector_pointers[i], zeros, 0, BLOCK_SECTOR_SIZE);
+      }
+    }
+
+    cache_write_sector(sector, disk_inode, 0, BLOCK_SECTOR_SIZE);
+  }
+
+  free(disk_inode);
+
+  return true;
 }
 
 /* Reads an inode from SECTOR
@@ -143,7 +164,9 @@ void inode_close(struct inode* inode) {
     /* Deallocate blocks if removed. */
     if (inode->removed) {
       free_map_release(inode->sector, 1);
-      free_map_release(inode->data.start, bytes_to_sectors(inode->data.length));
+      for (size_t i = 0; i < bytes_to_sectors(inode->data.length); i++) {
+        free_map_release(inode->data.sector_pointers[i], 1);
+      }
     }
 
     free(inode);
