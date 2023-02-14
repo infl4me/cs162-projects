@@ -1,6 +1,7 @@
 #include <debug.h>
 #include <round.h>
 #include <string.h>
+#include <stdio.h>
 #include "filesys/inode.h"
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
@@ -36,13 +37,25 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
     return -1;
   }
 
-  block_sector_t sector = pos / BLOCK_SECTOR_SIZE;
+  block_sector_t sector_idx = pos / BLOCK_SECTOR_SIZE;
 
-  if (sector < DIRECT_SECTORS_COUNT) {
-    return inode->data.sector_pointers[sector];
+  if (sector_idx >= TOTAL_SECTORS_COUNT) {
+    return -1;
   }
 
-  return -1;
+  if (sector_idx < DIRECT_SECTORS_COUNT) {
+    return inode->data.sector_pointers[sector_idx];
+  }
+
+  size_t indirect_pointer_idx = (sector_idx - DIRECT_SECTORS_COUNT) / SINGLE_BLOCK_SECTORS_COUNT;
+  size_t indirect_pointer_sector_idx =
+      (sector_idx - DIRECT_SECTORS_COUNT) % SINGLE_BLOCK_SECTORS_COUNT;
+
+  static block_sector_t buffer[SINGLE_BLOCK_SECTORS_COUNT];
+  cache_read_sector(inode->data.indirect_sector_pointers[indirect_pointer_idx], buffer, 0,
+                    BLOCK_SECTOR_SIZE);
+
+  return buffer[indirect_pointer_sector_idx];
 }
 
 /* List of open inodes, so that opening a single inode twice
@@ -79,23 +92,54 @@ bool inode_create(block_sector_t sector, off_t length) {
   }
 
   size_t sectors = bytes_to_sectors(length);
-  size_t indirect_sectors = 0;
+  size_t direct_sectors = sectors > DIRECT_SECTORS_COUNT ? DIRECT_SECTORS_COUNT : sectors;
+  size_t indirect_sectors = sectors > DIRECT_SECTORS_COUNT ? sectors - DIRECT_SECTORS_COUNT : 0;
+  size_t indirect_pointers =
+      indirect_sectors > 0 ? (indirect_sectors / SINGLE_BLOCK_SECTORS_COUNT) + 1 : 0;
 
-  if ((sectors > DIRECT_SECTORS_COUNT)) {
-    ASSERT(0);
-  }
+  ASSERT(indirect_pointers <= INDIRECT_SECTORS_COUNT);
 
   disk_inode->length = length;
   disk_inode->magic = INODE_MAGIC;
 
-  if (free_map_allocate(sectors, disk_inode->sector_pointers)) {
-    if (sectors > 0) {
-      static char zeros[BLOCK_SECTOR_SIZE];
-      size_t i;
+  if (free_map_allocate(direct_sectors, disk_inode->sector_pointers)) {
+    static char zeros[BLOCK_SECTOR_SIZE];
 
-      for (i = 0; i < sectors; i++) {
+    if (direct_sectors > 0) {
+      for (size_t i = 0; i < direct_sectors; i++) {
         disk_inode->sector_pointers[i] = disk_inode->sector_pointers[0] + i;
         cache_write_sector(disk_inode->sector_pointers[i], zeros, 0, BLOCK_SECTOR_SIZE);
+      }
+    }
+
+    if (indirect_pointers > 0) {
+      static block_sector_t sector_buffer[SINGLE_BLOCK_SECTORS_COUNT];
+
+      for (size_t i = 0; i < indirect_pointers; i++) {
+        size_t sectors_left = indirect_sectors - (i * SINGLE_BLOCK_SECTORS_COUNT);
+        size_t sectors_to_allocate =
+            sectors_left > SINGLE_BLOCK_SECTORS_COUNT ? SINGLE_BLOCK_SECTORS_COUNT : sectors_left;
+
+        // allocate indirect pointer
+        ASSERT(free_map_allocate(1, &disk_inode->indirect_sector_pointers[i]));
+
+        // allocate sectors that indirect pointer points to
+        ASSERT(free_map_allocate(sectors_to_allocate, &sector_buffer[0]));
+
+        // fill in buffer with pointers
+        // and write zeros to sectors
+        for (size_t j = 0; j < sectors_to_allocate; j++) {
+          sector_buffer[j] = sector_buffer[0] + j;
+          cache_write_sector(sector_buffer[j], zeros, 0, BLOCK_SECTOR_SIZE);
+        }
+
+        // zero out remaining space
+        for (size_t j = sectors_to_allocate; j < SINGLE_BLOCK_SECTORS_COUNT; j++) {
+          sector_buffer[j] = 0;
+        }
+
+        cache_write_sector(disk_inode->indirect_sector_pointers[i], sector_buffer, 0,
+                           BLOCK_SECTOR_SIZE);
       }
     }
 
@@ -164,8 +208,33 @@ void inode_close(struct inode* inode) {
     /* Deallocate blocks if removed. */
     if (inode->removed) {
       free_map_release(inode->sector, 1);
-      for (size_t i = 0; i < bytes_to_sectors(inode->data.length); i++) {
+
+      size_t sectors = bytes_to_sectors(inode->data.length);
+      size_t direct_sectors = sectors > DIRECT_SECTORS_COUNT ? DIRECT_SECTORS_COUNT : sectors;
+      size_t indirect_sectors = sectors > DIRECT_SECTORS_COUNT ? sectors - DIRECT_SECTORS_COUNT : 0;
+      size_t indirect_pointers =
+          indirect_sectors > 0 ? (indirect_sectors / SINGLE_BLOCK_SECTORS_COUNT) + 1 : 0;
+
+      for (size_t i = 0; i < direct_sectors; i++) {
         free_map_release(inode->data.sector_pointers[i], 1);
+      }
+
+      if (indirect_pointers > 0) {
+        static block_sector_t buffer[SINGLE_BLOCK_SECTORS_COUNT];
+
+        for (size_t i = 0; i < indirect_pointers; i++) {
+          size_t sectors_left = indirect_sectors - (i * SINGLE_BLOCK_SECTORS_COUNT);
+          size_t sectors_to_deallocate =
+              sectors_left > SINGLE_BLOCK_SECTORS_COUNT ? SINGLE_BLOCK_SECTORS_COUNT : sectors_left;
+
+          cache_read_sector(inode->data.indirect_sector_pointers[i], buffer, 0, BLOCK_SECTOR_SIZE);
+
+          for (size_t j = 0; j < sectors_to_deallocate; j++) {
+            free_map_release(buffer[j], 1);
+          }
+
+          free_map_release(inode->data.indirect_sector_pointers[i], 1);
+        }
       }
     }
 
