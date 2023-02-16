@@ -34,14 +34,12 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
   ASSERT(inode != NULL);
 
   if (pos >= inode->data.length) {
-    return -1;
+    return 0;
   }
 
   block_sector_t sector_idx = pos / BLOCK_SECTOR_SIZE;
 
-  if (sector_idx >= TOTAL_SECTORS_COUNT) {
-    return -1;
-  }
+  ASSERT(sector_idx < TOTAL_SECTORS_COUNT);
 
   if (sector_idx < DIRECT_SECTORS_COUNT) {
     return inode->data.sector_pointers[sector_idx];
@@ -56,6 +54,109 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
                     BLOCK_SECTOR_SIZE);
 
   return buffer[indirect_pointer_sector_idx];
+}
+
+static bool allocate_sectors(struct inode* inode, off_t pos) {
+  ASSERT(inode != NULL);
+
+  block_sector_t target_sector_idx = (pos - 1) / BLOCK_SECTOR_SIZE;
+  block_sector_t current_sector_idx = (inode->data.length - 1) / BLOCK_SECTOR_SIZE;
+  ASSERT(target_sector_idx < TOTAL_SECTORS_COUNT);
+
+  block_sector_t sector;
+  static char zeros[BLOCK_SECTOR_SIZE];
+
+  if (inode->data.length == 0) {
+    // TODO: if first run handle it here, need to refactor later
+    ASSERT(free_map_allocate(1, &sector));
+    inode->data.sector_pointers[0] = sector;
+    cache_write_sector(sector, zeros, 0, BLOCK_SECTOR_SIZE);
+    inode->data.length = pos > BLOCK_SECTOR_SIZE ? BLOCK_SECTOR_SIZE : pos;
+    cache_write_sector(inode->sector, &inode->data, 0, BLOCK_SECTOR_SIZE);
+  }
+
+  if (current_sector_idx >= target_sector_idx) {
+    // if same sector just change the position, no need to allocate
+    if (current_sector_idx == target_sector_idx && pos > inode->data.length) {
+      inode->data.length = pos;
+      cache_write_sector(inode->sector, &inode->data, 0, BLOCK_SECTOR_SIZE);
+    }
+    return false; // TODO: refactor return value
+  }
+
+  // allocate direct pointers
+  block_sector_t last_direct_sector_idx =
+      target_sector_idx < DIRECT_SECTORS_COUNT ? target_sector_idx : DIRECT_SECTORS_COUNT - 1;
+  for (size_t i = current_sector_idx + 1; i <= last_direct_sector_idx; i++) {
+    if (!free_map_allocate(1, &sector)) {
+      ASSERT(0);
+    }
+    inode->data.sector_pointers[i] = sector;
+  }
+
+  // allocate indirect pointers
+  if (target_sector_idx >= DIRECT_SECTORS_COUNT) {
+    block_sector_t first_indirect_sector_idx =
+        current_sector_idx >= DIRECT_SECTORS_COUNT ? current_sector_idx - DIRECT_SECTORS_COUNT : 0;
+    block_sector_t last_indirect_sector_idx = target_sector_idx - DIRECT_SECTORS_COUNT;
+    // size_t indirect_sectors = target_indirect_pointer_idx + current_indirect_pointer_idx == 0
+    //                               ? 1
+    //                               : target_indirect_pointer_idx - current_indirect_pointer_idx;
+    // size_t indirect_pointers =
+    //     indirect_sectors > 0 ? (indirect_sectors / SINGLE_BLOCK_SECTORS_COUNT) + 1 : 0;
+
+    size_t current_indirect_pointer_idx = first_indirect_sector_idx / SINGLE_BLOCK_SECTORS_COUNT;
+    size_t target_indirect_pointer_idx = last_indirect_sector_idx / SINGLE_BLOCK_SECTORS_COUNT;
+
+    bool is_first_run = current_sector_idx < DIRECT_SECTORS_COUNT;
+
+    block_sector_t current_indirect_sector_idx =
+        first_indirect_sector_idx % SINGLE_BLOCK_SECTORS_COUNT;
+    block_sector_t target_indirect_sector_idx =
+        last_indirect_sector_idx % SINGLE_BLOCK_SECTORS_COUNT;
+
+    static block_sector_t sector_buffer[SINGLE_BLOCK_SECTORS_COUNT];
+
+    for (size_t i = current_indirect_pointer_idx; i <= target_indirect_pointer_idx; i++) {
+      bool is_first_idx = i == current_indirect_pointer_idx;
+      bool is_last_idx = i == target_indirect_pointer_idx;
+
+      if (is_first_run || !is_first_idx) {
+        if (!free_map_allocate(1, &inode->data.indirect_sector_pointers[i])) {
+          ASSERT(0);
+        }
+      } else {
+        cache_read_sector(inode->data.indirect_sector_pointers[i], sector_buffer, 0,
+                          BLOCK_SECTOR_SIZE);
+      }
+
+      size_t j_start = is_first_idx && !is_first_run ? current_indirect_sector_idx + 1 : 0;
+      size_t j_end = is_last_idx ? target_indirect_sector_idx : SINGLE_BLOCK_SECTORS_COUNT - 1;
+      for (size_t j = j_start; j <= j_end; j++) {
+        if (!free_map_allocate(1, &sector)) {
+          ASSERT(0);
+        }
+        if (sector_buffer[j] != 0) {
+          ASSERT(0);
+        } // TODO:
+        sector_buffer[j] = sector;
+        cache_write_sector(sector_buffer[j], zeros, 0, BLOCK_SECTOR_SIZE);
+      }
+
+      // TODO: zero out remaining space
+      // for (size_t j = sectors_to_allocate; j < SINGLE_BLOCK_SECTORS_COUNT; j++) {
+      //   sector_buffer[j] = 0;
+      // }
+
+      cache_write_sector(inode->data.indirect_sector_pointers[i], sector_buffer, 0,
+                         BLOCK_SECTOR_SIZE);
+    }
+  }
+
+  inode->data.length = pos;
+  cache_write_sector(inode->sector, &inode->data, 0, BLOCK_SECTOR_SIZE);
+
+  return true;
 }
 
 /* List of open inodes, so that opening a single inode twice
@@ -259,6 +360,10 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
   while (size > 0) {
     /* Disk sector to read, starting byte offset within sector. */
     block_sector_t sector_idx = byte_to_sector(inode, offset);
+    if (sector_idx == 0) {
+      break;
+    }
+
     int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
     /* Bytes left in inode, bytes left in sector, lesser of the two. */
@@ -294,9 +399,15 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
   if (inode->deny_write_cnt)
     return 0;
 
+  allocate_sectors(inode, offset + size);
+
   while (size > 0) {
     /* Sector to write, starting byte offset within sector. */
     block_sector_t sector_idx = byte_to_sector(inode, offset);
+    if (sector_idx == 0) {
+      break;
+    }
+
     int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
     /* Bytes left in inode, bytes left in sector, lesser of the two. */
