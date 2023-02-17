@@ -61,12 +61,13 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
 /*
   allocates sectors_count number of sectors starting at sector_idx for inode using direct pointers
 */
-static void allocate_direct_pointers(struct inode* inode, size_t sector_idx, size_t sectors_count) {
+static void allocate_direct_pointers(struct inode_disk* inode, size_t sector_idx,
+                                     size_t sectors_count) {
   block_sector_t sector;
 
   for (size_t i = sector_idx; i < sector_idx + sectors_count; i++) {
     ASSERT(free_map_allocate(1, &sector));
-    inode->data.sector_pointers[i] = sector;
+    inode->sector_pointers[i] = sector;
     cache_write_sector(sector, zeros, 0, BLOCK_SECTOR_SIZE);
   }
 }
@@ -74,8 +75,11 @@ static void allocate_direct_pointers(struct inode* inode, size_t sector_idx, siz
 /*
   allocates sectors_count number of sectors starting at sector_idx for inode using indirect pointers
 */
-static void allocate_indirect_pointers(struct inode* inode, size_t sector_idx,
+static void allocate_indirect_pointers(struct inode_disk* inode, size_t sector_idx,
                                        size_t sectors_count) {
+  if (sectors_count == 0)
+    return;
+
   size_t first_pointer_idx = sector_idx / SINGLE_BLOCK_SECTORS_COUNT;
   size_t first_sector_idx = sector_idx % SINGLE_BLOCK_SECTORS_COUNT;
 
@@ -102,10 +106,9 @@ static void allocate_indirect_pointers(struct inode* inode, size_t sector_idx,
     // otherwise allocate indirect pointer
     // although there is a special case when it's a first run, then need to allocate new sector
     if (is_first_i && !is_first_run) {
-      cache_read_sector(inode->data.indirect_sector_pointers[i], sector_buffer, 0,
-                        BLOCK_SECTOR_SIZE);
+      cache_read_sector(inode->indirect_sector_pointers[i], sector_buffer, 0, BLOCK_SECTOR_SIZE);
     } else {
-      ASSERT(free_map_allocate(1, &inode->data.indirect_sector_pointers[i]))
+      ASSERT(free_map_allocate(1, &inode->indirect_sector_pointers[i]))
       memset(sector_buffer, 0, sizeof(block_sector_t) * SINGLE_BLOCK_SECTORS_COUNT);
       // cache_write_sector(inode->data.indirect_sector_pointers[i], zeros, 0, BLOCK_SECTOR_SIZE);
     }
@@ -119,8 +122,7 @@ static void allocate_indirect_pointers(struct inode* inode, size_t sector_idx,
       cache_write_sector(sector_buffer[j], zeros, 0, BLOCK_SECTOR_SIZE);
     }
 
-    cache_write_sector(inode->data.indirect_sector_pointers[i], sector_buffer, 0,
-                       BLOCK_SECTOR_SIZE);
+    cache_write_sector(inode->indirect_sector_pointers[i], sector_buffer, 0, BLOCK_SECTOR_SIZE);
   }
 }
 
@@ -143,9 +145,9 @@ static bool allocate_sectors(struct inode* inode, off_t pos) {
   ASSERT(count >= 0);
   if (inode_length(inode) == 0) {
     // special first run case when current_sector_idx is not yet allocated
-    allocate_direct_pointers(inode, 0, count + 1);
+    allocate_direct_pointers(&inode->data, 0, count + 1);
   } else if (count > 0) {
-    allocate_direct_pointers(inode, first_direct_sector_idx + 1, count);
+    allocate_direct_pointers(&inode->data, first_direct_sector_idx + 1, count);
   }
 
   // allocate indirect pointers
@@ -157,9 +159,10 @@ static bool allocate_sectors(struct inode* inode, off_t pos) {
         current_sector_idx < DIRECT_SECTORS_COUNT ? 0 : current_sector_idx - DIRECT_SECTORS_COUNT;
     block_sector_t last_sector_idx = target_sector_idx - DIRECT_SECTORS_COUNT;
     if (is_first_run) {
-      allocate_indirect_pointers(inode, 0, last_sector_idx - first_sector_idx + 1);
+      allocate_indirect_pointers(&inode->data, 0, last_sector_idx - first_sector_idx + 1);
     } else {
-      allocate_indirect_pointers(inode, first_sector_idx + 1, last_sector_idx - first_sector_idx);
+      allocate_indirect_pointers(&inode->data, first_sector_idx + 1,
+                                 last_sector_idx - first_sector_idx);
     }
   }
 
@@ -205,55 +208,16 @@ bool inode_create(block_sector_t sector, off_t length) {
   size_t sectors = bytes_to_sectors(length);
   size_t direct_sectors = sectors > DIRECT_SECTORS_COUNT ? DIRECT_SECTORS_COUNT : sectors;
   size_t indirect_sectors = sectors > DIRECT_SECTORS_COUNT ? sectors - DIRECT_SECTORS_COUNT : 0;
-  size_t indirect_pointers =
-      indirect_sectors > 0 ? (indirect_sectors / SINGLE_BLOCK_SECTORS_COUNT) + 1 : 0;
 
-  ASSERT(indirect_pointers <= INDIRECT_SECTORS_COUNT);
+  ASSERT(indirect_sectors <= INDIRECT_SECTORS_COUNT * SINGLE_BLOCK_SECTORS_COUNT);
 
   disk_inode->length = length;
   disk_inode->magic = INODE_MAGIC;
 
-  if (free_map_allocate(direct_sectors, disk_inode->sector_pointers)) {
-    if (direct_sectors > 0) {
-      for (size_t i = 0; i < direct_sectors; i++) {
-        disk_inode->sector_pointers[i] = disk_inode->sector_pointers[0] + i;
-        cache_write_sector(disk_inode->sector_pointers[i], zeros, 0, BLOCK_SECTOR_SIZE);
-      }
-    }
+  allocate_direct_pointers(disk_inode, 0, direct_sectors);
+  allocate_indirect_pointers(disk_inode, 0, indirect_sectors);
 
-    if (indirect_pointers > 0) {
-      static block_sector_t sector_buffer[SINGLE_BLOCK_SECTORS_COUNT];
-
-      for (size_t i = 0; i < indirect_pointers; i++) {
-        size_t sectors_left = indirect_sectors - (i * SINGLE_BLOCK_SECTORS_COUNT);
-        size_t sectors_to_allocate =
-            sectors_left > SINGLE_BLOCK_SECTORS_COUNT ? SINGLE_BLOCK_SECTORS_COUNT : sectors_left;
-
-        // allocate indirect pointer
-        ASSERT(free_map_allocate(1, &disk_inode->indirect_sector_pointers[i]));
-
-        // allocate sectors that indirect pointer points to
-        ASSERT(free_map_allocate(sectors_to_allocate, &sector_buffer[0]));
-
-        // fill in buffer with pointers
-        // and write zeros to sectors
-        for (size_t j = 0; j < sectors_to_allocate; j++) {
-          sector_buffer[j] = sector_buffer[0] + j;
-          cache_write_sector(sector_buffer[j], zeros, 0, BLOCK_SECTOR_SIZE);
-        }
-
-        // zero out remaining space
-        for (size_t j = sectors_to_allocate; j < SINGLE_BLOCK_SECTORS_COUNT; j++) {
-          sector_buffer[j] = 0;
-        }
-
-        cache_write_sector(disk_inode->indirect_sector_pointers[i], sector_buffer, 0,
-                           BLOCK_SECTOR_SIZE);
-      }
-    }
-
-    cache_write_sector(sector, disk_inode, 0, BLOCK_SECTOR_SIZE);
-  }
+  cache_write_sector(sector, disk_inode, 0, BLOCK_SECTOR_SIZE);
 
   free(disk_inode);
 
