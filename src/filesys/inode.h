@@ -10,7 +10,7 @@ struct bitmap;
 
 #define DIRECT_SECTORS_COUNT 16
 #define INDIRECT_SECTORS_COUNT 110
-#define SINGLE_BLOCK_SECTORS_COUNT 128
+#define SINGLE_BLOCK_SECTORS_COUNT 128 // how many sector pointers can fit one sector
 #define TOTAL_SECTORS_COUNT (DIRECT_SECTORS_COUNT + (INDIRECT_SECTORS_COUNT * SINGLE_BLOCK_SECTORS_COUNT))
 
 /* On-disk inode.
