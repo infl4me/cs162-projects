@@ -22,9 +22,7 @@ struct file* file_open(struct inode* inode) {
 
 /* Opens and returns a new file for the same inode as FILE.
    Returns a null pointer if unsuccessful. */
-struct file* file_reopen(struct file* file) {
-  return file_open(inode_reopen(file->inode));
-}
+struct file* file_reopen(struct file* file) { return file_open(inode_reopen(file->inode)); }
 
 /* Closes FILE. */
 void file_close(struct file* file) {
@@ -36,9 +34,7 @@ void file_close(struct file* file) {
 }
 
 /* Returns the inode encapsulated by FILE. */
-struct inode* file_get_inode(struct file* file) {
-  return file->inode;
-}
+struct inode* file_get_inode(struct file* file) { return file->inode; }
 
 /* Reads SIZE bytes from FILE into BUFFER,
    starting at the file's current position.
@@ -124,4 +120,15 @@ void file_seek(struct file* file, off_t new_pos) {
 off_t file_tell(struct file* file) {
   ASSERT(file != NULL);
   return file->pos;
+}
+
+/*
+  Returns the inode number of the inode associated with fd, which may represent an ordinary file or a
+  directory.
+  An inode number persistently identifies a file or directory. It is unique during the file’s existence. In
+  Pintos, the sector number of the inode is suitable for use as an inode number.
+*/
+int file_inumber(struct file* file) {
+  ASSERT(file != NULL);
+  return (int)file->inode->sector;
 }

@@ -333,6 +333,17 @@ bool file_syscall_handler(struct intr_frame* f) {
       remove_process_file(args[1]);
 
       break;
+    case SYS_INUMBER:
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        return 1;
+      }
+
+      f->eax = file_inumber(process_file->file);
+
+      break;
     default:
       return 0;
   }
