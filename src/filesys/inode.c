@@ -26,6 +26,8 @@ void cache_write_sector(block_sector_t sector, const void* buffer, int sector_of
    bytes long. */
 static inline size_t bytes_to_sectors(off_t size) { return DIV_ROUND_UP(size, BLOCK_SECTOR_SIZE); }
 
+static char zeros[BLOCK_SECTOR_SIZE];
+
 /* Returns the block device sector that contains byte offset POS
    within INODE.
    Returns -1 if INODE does not contain data for a byte at offset
@@ -56,53 +58,53 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
   return buffer[indirect_pointer_sector_idx];
 }
 
+static void allocate_direct_pointers(struct inode* inode, size_t first_idx, size_t count) {
+  block_sector_t sector;
+
+  for (size_t i = first_idx; i < first_idx + count; i++) {
+    ASSERT(free_map_allocate(1, &sector));
+    inode->data.sector_pointers[i] = sector;
+    cache_write_sector(sector, zeros, 0, BLOCK_SECTOR_SIZE);
+  }
+}
+
 static bool allocate_sectors(struct inode* inode, off_t pos) {
   ASSERT(inode != NULL);
+
+  if (pos < inode->data.length) {
+    return false;
+  }
 
   block_sector_t target_sector_idx = (pos - 1) / BLOCK_SECTOR_SIZE;
   block_sector_t current_sector_idx = (inode->data.length - 1) / BLOCK_SECTOR_SIZE;
   ASSERT(target_sector_idx < TOTAL_SECTORS_COUNT);
 
   block_sector_t sector;
-  static char zeros[BLOCK_SECTOR_SIZE];
-
-  if (inode->data.length == 0) {
-    // TODO: if first run handle it here, need to refactor later
-    ASSERT(free_map_allocate(1, &sector));
-    inode->data.sector_pointers[0] = sector;
-    cache_write_sector(sector, zeros, 0, BLOCK_SECTOR_SIZE);
-    inode->data.length = pos > BLOCK_SECTOR_SIZE ? BLOCK_SECTOR_SIZE : pos;
-    cache_write_sector(inode->sector, &inode->data, 0, BLOCK_SECTOR_SIZE);
-  }
-
-  if (current_sector_idx >= target_sector_idx) {
-    // if same sector just change the position, no need to allocate
-    if (current_sector_idx == target_sector_idx && pos > inode->data.length) {
-      inode->data.length = pos;
-      cache_write_sector(inode->sector, &inode->data, 0, BLOCK_SECTOR_SIZE);
-    }
-    return false; // TODO: refactor return value
-  }
 
   // allocate direct pointers
+  block_sector_t first_direct_sector_idx = current_sector_idx;
   block_sector_t last_direct_sector_idx =
       target_sector_idx < DIRECT_SECTORS_COUNT ? target_sector_idx : DIRECT_SECTORS_COUNT - 1;
-  for (size_t i = current_sector_idx + 1; i <= last_direct_sector_idx; i++) {
-    ASSERT(free_map_allocate(1, &sector));
-    inode->data.sector_pointers[i] = sector;
-    cache_write_sector(sector, zeros, 0, BLOCK_SECTOR_SIZE);
+  int64_t count = last_direct_sector_idx - first_direct_sector_idx;
+  ASSERT(count >= 0);
+  if (inode->data.length == 0) {
+    // special first run case when current_sector_idx is not yet allocated
+    allocate_direct_pointers(inode, 0, count + 1);
+  } else if (count > 0) {
+    allocate_direct_pointers(inode, first_direct_sector_idx + 1, count);
   }
 
   // allocate indirect pointers
   if (target_sector_idx >= DIRECT_SECTORS_COUNT) {
+    // special case when current_sector_idx is not yet allocated
+    bool is_first_run = current_sector_idx < DIRECT_SECTORS_COUNT;
+
     block_sector_t first_indirect_sector_idx =
         current_sector_idx >= DIRECT_SECTORS_COUNT ? current_sector_idx - DIRECT_SECTORS_COUNT : 0;
     block_sector_t last_indirect_sector_idx = target_sector_idx - DIRECT_SECTORS_COUNT;
 
     size_t current_indirect_pointer_idx = first_indirect_sector_idx / SINGLE_BLOCK_SECTORS_COUNT;
     size_t target_indirect_pointer_idx = last_indirect_sector_idx / SINGLE_BLOCK_SECTORS_COUNT;
-
-    bool is_first_run = current_sector_idx < DIRECT_SECTORS_COUNT;
 
     block_sector_t current_indirect_sector_idx =
         first_indirect_sector_idx % SINGLE_BLOCK_SECTORS_COUNT;
@@ -193,8 +195,6 @@ bool inode_create(block_sector_t sector, off_t length) {
   disk_inode->magic = INODE_MAGIC;
 
   if (free_map_allocate(direct_sectors, disk_inode->sector_pointers)) {
-    static char zeros[BLOCK_SECTOR_SIZE];
-
     if (direct_sectors > 0) {
       for (size_t i = 0; i < direct_sectors; i++) {
         disk_inode->sector_pointers[i] = disk_inode->sector_pointers[0] + i;
