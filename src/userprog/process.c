@@ -161,6 +161,8 @@ void userprog_init(void) {
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
   t->pcb->pid = t->tid;
+  t->pcb->parent_dir = NULL;
+  t->pcb->current_dir = NULL;
 
   list_init(&process_children);
   lock_init(&process_children_lock);
@@ -177,6 +179,7 @@ struct start_process_args {
   char* command;
   pid_t parent_pid;
   bool exec_success;
+  struct dir* parent_dir;
 
   // semaphore to wait until start_process to finish setting up new process
   // so process_execute can do its housekeeping until process actually starts running
@@ -213,6 +216,7 @@ pid_t process_execute(const char* file_name) {
   start_process_args->command = fn_copy;
   start_process_args->parent_pid = cur_t->pcb->pid;
   start_process_args->exec_success = 0;
+  start_process_args->parent_dir = cur_t->pcb->current_dir;
   sema_init(&start_process_args->process_set_wait, 0);
   sema_init(&start_process_args->process_exec_wait, 0);
 
@@ -273,6 +277,19 @@ static void start_process(void* args_) {
   char* argv[max_argc];
   int file_name_length;
   int command_total_length;
+
+  if (success) {
+    if (args->parent_dir == NULL) {
+      // if it's first process current_dir is root and no parent_dir
+      new_pcb->parent_dir = NULL;
+      new_pcb->current_dir = dir_open_root();
+      success = new_pcb->current_dir != NULL;
+    } else {
+      new_pcb->parent_dir = dir_reopen(args->parent_dir);
+      new_pcb->current_dir = dir_reopen(args->parent_dir);
+      success = new_pcb->parent_dir != NULL && new_pcb->current_dir != NULL;
+    }
+  }
 
   // break command into controllable array of pointers
   if (success) {
@@ -371,6 +388,9 @@ static void start_process(void* args_) {
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
   if (!success && pcb_success) {
+    dir_close(new_pcb->parent_dir);
+    dir_close(new_pcb->current_dir);
+
     // Avoid race where PCB is freed before t->pcb is set to NULL
     // If this happens, then an unfortuantely timed timer interrupt
     // can try to activate the pagedir, but it is now freed memory
@@ -553,6 +573,9 @@ void process_exit(int status) {
   }
 
   file_close(cur_t->pcb->exec_file);
+
+  dir_close(cur_t->pcb->parent_dir);
+  dir_close(cur_t->pcb->current_dir);
 
   // free process file descriptors
   {
