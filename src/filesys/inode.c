@@ -190,7 +190,7 @@ void inode_init(void) {
    device.
    Returns true if successful.
    Returns false if memory or disk allocation fails. */
-bool inode_create(block_sector_t sector, off_t length) {
+bool inode_create(block_sector_t sector, off_t length, enum inode_flags flags) {
   struct inode_disk* disk_inode = NULL;
 
   ASSERT(length >= 0);
@@ -212,6 +212,7 @@ bool inode_create(block_sector_t sector, off_t length) {
   ASSERT(indirect_sectors <= INDIRECT_SECTORS_COUNT * SINGLE_BLOCK_SECTORS_COUNT);
 
   disk_inode->length = length;
+  disk_inode->flags = flags;
   disk_inode->magic = INODE_MAGIC;
 
   allocate_direct_pointers(disk_inode, 0, direct_sectors);
@@ -264,6 +265,10 @@ struct inode* inode_reopen(struct inode* inode) {
 
 /* Returns INODE's inode number. */
 block_sector_t inode_get_inumber(const struct inode* inode) { return inode->sector; }
+
+bool inode_is_dir(const struct inode* inode) {
+  return inode->data.flags & INODE_DIR_TYPE;
+}
 
 /* Closes INODE and writes it to disk.
    If this was the last reference to INODE, frees its memory.
