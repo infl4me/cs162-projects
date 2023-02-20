@@ -1,6 +1,5 @@
 #include "filesys/file.h"
 #include <debug.h>
-#include "filesys/inode.h"
 #include "threads/malloc.h"
 
 /* Opens a file for the given INODE, of which it takes ownership,
@@ -128,7 +127,12 @@ off_t file_tell(struct file* file) {
   An inode number persistently identifies a file or directory. It is unique during the file’s existence. In
   Pintos, the sector number of the inode is suitable for use as an inode number.
 */
-int file_inumber(struct file* file) {
+block_sector_t file_inumber(struct file* file) {
   ASSERT(file != NULL);
-  return (int)file->inode->sector;
+  return inode_get_inumber(file->inode);
+}
+
+bool file_is_dir(struct file* file) {
+  ASSERT(file != NULL);
+  return inode_is_dir(file->inode);
 }

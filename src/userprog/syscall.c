@@ -341,7 +341,23 @@ bool file_syscall_handler(struct intr_frame* f) {
         return 1;
       }
 
-      f->eax = file_inumber(process_file->file);
+      f->eax = (int)file_inumber(process_file->file);
+
+      break;
+    case SYS_ISDIR:
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL) {
+        return 1;
+      }
+
+      f->eax = file_is_dir(process_file->file);
+
+      break;
+    // case SYS_CHDIR:
+    //   validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+    //   validate_string_in_user_region((char*)args[1]);
 
       break;
     default:

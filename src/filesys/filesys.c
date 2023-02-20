@@ -11,7 +11,7 @@
 struct block* fs_device;
 
 static void do_format(void);
-struct file* dir_tree_lookup(struct dir* initial_dir, const char* path);
+struct inode* dir_tree_lookup(struct dir* initial_dir, const char* path);
 
 /*
   Extracts a file name part from *SRCP into PART, and updates *SRCP so that the
@@ -87,37 +87,54 @@ bool filesys_create(const char* name, off_t initial_size) {
    or if an internal memory allocation fails. */
 struct file* filesys_open(const char* name) {
   struct dir* dir = dir_open_root();
-  struct file* file =  dir_tree_lookup(dir, name);
+  struct inode* inode = dir_tree_lookup(dir, name);
+  
   dir_close(dir);
 
-  return file;
+  if (inode == NULL) return NULL;
+
+  if (inode_is_dir(inode)) {
+    inode_close(inode);
+    return NULL;
+  }
+
+  return file_open(inode);
 }
 
 /*
-  Looks up for a file inside the given PATH starting at initial_dir
+  Looks up for a file or directory inside the given PATH starting at initial_dir
+  Returns inode or NULL
 */
-struct file* dir_tree_lookup(struct dir* initial_dir, const char* path) {
-  struct inode* inode = NULL;
-  struct dir* dir = initial_dir;
+struct inode* dir_tree_lookup(struct dir* initial_dir, const char* path) {
   char name[NAME_MAX + 1];
   const char* srcp = path;
-  int name_extraction_result;
 
-  while (dir != NULL && (name_extraction_result = get_next_part(name, &srcp)) == 1) {
-    if (!dir_lookup(dir, name, &inode))
-      break;
+  if (get_next_part(name, &srcp) != 1)
+    return NULL;
 
-    if (dir != initial_dir)
-      dir_close(dir);
+  struct inode* inode = NULL;
+  struct dir* dir = dir_reopen(initial_dir);
 
-    if (inode_is_dir(inode)) {
-      dir = dir_open(inode);
+  while (dir != NULL && dir_lookup(dir, name, &inode)) {
+    dir_close(dir);
+
+    switch (get_next_part(name, &srcp)) {
+      // current inode is a dir, go next
+      case 1:
+        dir = dir_open(inode);
+        break;
+      // current inode is the last part of the path, we done
+      case 0:
+        return inode;
+      // path is invalid
+      case -1:
+        return NULL;
     }
   }
 
-  if (dir != initial_dir)
-    dir_close(dir);
-  return name_extraction_result == 0 ? file_open(inode) : NULL;
+  // if dir lookup failed
+  dir_close(dir);
+  return NULL;
 }
 
 /* Deletes the file named NAME.
