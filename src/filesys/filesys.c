@@ -11,7 +11,7 @@
 struct block* fs_device;
 
 static void do_format(void);
-struct inode* dir_tree_lookup(struct dir* initial_dir, const char* path);
+struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, char* filename_buffer);
 
 /*
   Extracts a file name part from *SRCP into PART, and updates *SRCP so that the
@@ -87,7 +87,7 @@ bool filesys_create(const char* name, off_t initial_size) {
    or if an internal memory allocation fails. */
 struct file* filesys_open(const char* name) {
   struct dir* dir = dir_open_root();
-  struct inode* inode = dir_tree_lookup(dir, name);
+  struct inode* inode = dir_tree_lookup(dir, name, NULL);
   
   dir_close(dir);
 
@@ -101,11 +101,26 @@ struct file* filesys_open(const char* name) {
   return file_open(inode);
 }
 
+struct dir* filesys_open_dir(struct dir* anchor_dir, const char* name) {
+  struct inode* inode = dir_tree_lookup(anchor_dir, name, NULL);
+
+  if (inode == NULL) return NULL;
+
+  if (!inode_is_dir(inode)) {
+    inode_close(inode);
+    return NULL;
+  }
+
+  return dir_open(inode);
+}
+
 /*
-  Looks up for a file or directory inside the given PATH starting at initial_dir
+  Looks up for a file or directory inside the given PATH starting at anchor_dir
   Returns inode or NULL
 */
-struct inode* dir_tree_lookup(struct dir* initial_dir, const char* path) {
+struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, char* filename_buffer) {
+  ASSERT(anchor_dir != NULL);
+
   char name[NAME_MAX + 1];
   const char* srcp = path;
 
@@ -113,7 +128,7 @@ struct inode* dir_tree_lookup(struct dir* initial_dir, const char* path) {
     return NULL;
 
   struct inode* inode = NULL;
-  struct dir* dir = dir_reopen(initial_dir);
+  struct dir* dir = dir_reopen(anchor_dir);
 
   while (dir != NULL && dir_lookup(dir, name, &inode)) {
     dir_close(dir);
@@ -133,6 +148,19 @@ struct inode* dir_tree_lookup(struct dir* initial_dir, const char* path) {
   }
 
   // if dir lookup failed
+  // and filename_buffer is present
+  // and for given path /A/B, dir A is present but B isn't
+  // return inode of the dir A and fill in the filename_buffer with name of the file B
+  if (dir != NULL && filename_buffer != NULL) {
+    strlcpy(filename_buffer, name, sizeof name);
+    if (get_next_part(name, &srcp) == 0) {
+      inode = inode_reopen(dir_get_inode(dir));
+      dir_close(dir);
+      return inode;
+    }
+  }
+
+  // if dir lookup failed
   dir_close(dir);
   return NULL;
 }
@@ -147,6 +175,28 @@ bool filesys_remove(const char* name) {
   dir_close(dir);
 
   return success;
+}
+
+bool filesys_mkdir(struct dir* anchor_dir, const char* file);
+bool filesys_mkdir(struct dir* anchor_dir, const char* file) {
+  char name[NAME_MAX + 1];
+  struct inode* inode = dir_tree_lookup(anchor_dir, file, name);
+
+  if (inode == NULL) return false;
+
+
+  struct dir* dir = dir_open(inode);
+
+  block_sector_t inode_sector = 0;
+  bool success = (dir != NULL && free_map_allocate(1, &inode_sector) &&
+                  dir_create(inode_sector, 16) &&
+                  dir_add(dir, name, inode_sector));
+
+  if (!success && inode_sector != 0)
+    free_map_release(inode_sector, 1);
+  dir_close(dir);
+
+  return true;
 }
 
 /* Formats the file system. */

@@ -1464,3 +1464,32 @@ bool process_sema_up(uintptr_t user_sema_id) {
 
   return true;
 }
+
+bool process_chdir(const char* file);
+bool process_chdir(const char* file) {
+  struct dir* anchor_dir = NULL;
+  struct thread* cur_t = thread_current();
+
+  if (file[0] == '/') {
+    anchor_dir = dir_open_root();
+  } else if (file[0] == '.' && file[1] == '.') {
+    anchor_dir = cur_t->pcb->parent_dir;
+  } else if (file[0] == '.') {
+    anchor_dir = cur_t->pcb->current_dir;
+  } else {
+    return false;
+  }
+
+  if (anchor_dir == NULL)
+    return false;
+
+  struct dir* dir = filesys_open_dir(anchor_dir, file);
+
+  if (dir == NULL)
+    return false;
+
+  dir_close(cur_t->pcb->current_dir);
+  cur_t->pcb->current_dir = dir;
+
+  return true;
+}
