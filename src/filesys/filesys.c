@@ -88,10 +88,11 @@ bool filesys_create(const char* name, off_t initial_size) {
 struct file* filesys_open(const char* name) {
   struct dir* dir = dir_open_root();
   struct inode* inode = dir_tree_lookup(dir, name, NULL);
-  
+
   dir_close(dir);
 
-  if (inode == NULL) return NULL;
+  if (inode == NULL)
+    return NULL;
 
   if (inode_is_dir(inode)) {
     inode_close(inode);
@@ -101,10 +102,15 @@ struct file* filesys_open(const char* name) {
   return file_open(inode);
 }
 
-struct dir* filesys_open_dir(struct dir* anchor_dir, const char* name) {
+struct inode* filesys_open_inode(struct dir* anchor_dir, const char* name) {
+  return dir_tree_lookup(anchor_dir, name, NULL);
+}
+
+struct dir* filesys_opendir(struct dir* anchor_dir, const char* name) {
   struct inode* inode = dir_tree_lookup(anchor_dir, name, NULL);
 
-  if (inode == NULL) return NULL;
+  if (inode == NULL)
+    return NULL;
 
   if (!inode_is_dir(inode)) {
     inode_close(inode);
@@ -119,7 +125,8 @@ struct dir* filesys_open_dir(struct dir* anchor_dir, const char* name) {
   Returns inode or NULL
 */
 struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, char* filename_buffer) {
-  ASSERT(anchor_dir != NULL);
+  if (anchor_dir == NULL)
+    return NULL;
 
   char name[NAME_MAX + 1];
   const char* srcp = path;
@@ -177,20 +184,18 @@ bool filesys_remove(const char* name) {
   return success;
 }
 
-bool filesys_mkdir(struct dir* anchor_dir, const char* file);
 bool filesys_mkdir(struct dir* anchor_dir, const char* file) {
   char name[NAME_MAX + 1];
   struct inode* inode = dir_tree_lookup(anchor_dir, file, name);
 
-  if (inode == NULL) return false;
-
+  if (inode == NULL)
+    return false;
 
   struct dir* dir = dir_open(inode);
 
   block_sector_t inode_sector = 0;
   bool success = (dir != NULL && free_map_allocate(1, &inode_sector) &&
-                  dir_create(inode_sector, 16) &&
-                  dir_add(dir, name, inode_sector));
+                  dir_create(inode_sector, 16) && dir_add(dir, name, inode_sector));
 
   if (!success && inode_sector != 0)
     free_map_release(inode_sector, 1);

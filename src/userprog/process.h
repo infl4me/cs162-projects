@@ -61,7 +61,8 @@ struct process_child {
 struct process_file {
   struct list_elem process_file_elem;
   fd fd;
-  struct file* file;
+  bool is_dir;
+  void* file;
 };
 
 struct process_thread {
@@ -92,7 +93,7 @@ tid_t pthread_join(tid_t);
 void pthread_exit(void);
 void pthread_exit_main(void);
 struct process_child* find_child(pid_t parent_pid, pid_t child_pid);
-fd register_process_file(struct file* file);
+fd register_process_file(void* file, bool is_dir);
 fd allocate_fd(void);
 struct process_file* find_process_file(fd fd);
 bool remove_process_file(fd fd);

@@ -66,7 +66,7 @@ fd allocate_fd(void) {
   return fd;
 }
 
-fd register_process_file(struct file* file) {
+fd register_process_file(void* file, bool is_dir) {
   struct process_file* process_file = malloc(sizeof(struct process_file));
   if (process_file == NULL) {
     return FD_ERROR;
@@ -77,6 +77,7 @@ fd register_process_file(struct file* file) {
 
   process_file->fd = fd;
   process_file->file = file;
+  process_file->is_dir = is_dir;
 
   list_push_back(&t->pcb->process_files, &process_file->process_file_elem);
 
@@ -586,7 +587,11 @@ void process_exit(int status) {
       struct process_file* process_file = list_entry(elem, struct process_file, process_file_elem);
 
       list_remove(&process_file->process_file_elem);
-      file_close(process_file->file);
+      if (process_file->is_dir) {
+        dir_close((struct dir*)process_file->file);
+      } else {
+        file_close((struct file*)process_file->file);
+      }
       free(process_file);
     }
   }
@@ -1461,35 +1466,6 @@ bool process_sema_up(uintptr_t user_sema_id) {
   lock_release(&process_semas_lock);
 
   sema_up(&user_sema->sema);
-
-  return true;
-}
-
-bool process_chdir(const char* file);
-bool process_chdir(const char* file) {
-  struct dir* anchor_dir = NULL;
-  struct thread* cur_t = thread_current();
-
-  if (file[0] == '/') {
-    anchor_dir = dir_open_root();
-  } else if (file[0] == '.' && file[1] == '.') {
-    anchor_dir = cur_t->pcb->parent_dir;
-  } else if (file[0] == '.') {
-    anchor_dir = cur_t->pcb->current_dir;
-  } else {
-    return false;
-  }
-
-  if (anchor_dir == NULL)
-    return false;
-
-  struct dir* dir = filesys_open_dir(anchor_dir, file);
-
-  if (dir == NULL)
-    return false;
-
-  dir_close(cur_t->pcb->current_dir);
-  cur_t->pcb->current_dir = dir;
 
   return true;
 }

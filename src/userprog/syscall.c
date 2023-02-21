@@ -7,6 +7,7 @@
 #include "userprog/process.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
+#include "filesys/directory.h"
 #include "threads/vaddr.h"
 #include "pagedir.h"
 #include "devices/shutdown.h"
@@ -22,6 +23,7 @@ void syscall_acquire(void);
 bool file_syscall_handler(struct intr_frame*);
 void validate_string_in_user_region(const char* string);
 void validate_buffer_in_user_region(const void* buffer, size_t length);
+struct dir* get_anchor_dir(char** filepathp);
 
 static struct lock syscall_lock;
 
@@ -206,12 +208,33 @@ void syscall_handler(struct intr_frame* f) {
   syscall_release();
 }
 
+struct dir* get_anchor_dir(char** filepathp) {
+  struct dir* dir = NULL;
+  struct thread* cur_t = thread_current();
+  char* filepath = *filepathp;
+
+  if (filepath[0] == '/') {
+    dir = dir_open_root();
+  } else if (filepath[0] == '.' && filepath[1] == '.') {
+    dir = cur_t->pcb->parent_dir;
+    *filepath += 2;
+  } else if (filepath[0] == '.') {
+    dir = cur_t->pcb->current_dir;
+    *filepath += 1;
+  } else {
+    dir = cur_t->pcb->current_dir;
+  }
+
+  return dir;
+}
+
 // handles file's syscalls
 // returns true if syscall was handled
 bool file_syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
-  struct file* file;
   struct process_file* process_file;
+  struct thread* cur_t = thread_current();
+  char* filepath = NULL;
 
   switch (args[0]) {
     // FILESYS SYSCALLS
@@ -231,18 +254,39 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      file = filesys_open((char*)args[1]);
+      filepath = (char*)args[1];
+
+      struct inode* inode = filesys_open_inode(get_anchor_dir(&filepath), filepath);
+
+      if (inode == NULL) {
+        f->eax = FD_ERROR;
+        return 1;
+      }
+
+      void* file = NULL;
+
+      if (inode_is_dir(inode)) {
+        file = dir_open(inode);
+      } else {
+        file = file_open(inode);
+      }
+
       if (file == NULL) {
         f->eax = FD_ERROR;
         return 1;
       }
 
-      f->eax = register_process_file(file);
+      f->eax = register_process_file(file, inode_is_dir(inode));
       break;
     case SYS_FILESIZE:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       process_file = find_process_file(args[1]);
+
+      if (process_file->is_dir) {
+        f->eax = -1;
+        return 1;
+      }
 
       f->eax = process_file == NULL ? 0 : file_length(process_file->file);
       break;
@@ -270,7 +314,7 @@ bool file_syscall_handler(struct intr_frame* f) {
       }
 
       process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
+      if (process_file == NULL || process_file->is_dir) {
         f->eax = -1;
         return 1;
       }
@@ -290,8 +334,8 @@ bool file_syscall_handler(struct intr_frame* f) {
       }
 
       process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
-        f->eax = 0;
+      if (process_file == NULL || process_file->is_dir) {
+        f->eax = -1;
         return 1;
       }
 
@@ -302,7 +346,7 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], 2 * sizeof(uint32_t));
 
       process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
+      if (process_file == NULL || process_file->is_dir) {
         return 1;
       }
 
@@ -313,7 +357,7 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
 
       process_file = find_process_file(args[1]);
-      if (process_file == NULL) {
+      if (process_file == NULL || process_file->is_dir) {
         f->eax = 0;
         return 1;
       }
@@ -329,7 +373,12 @@ bool file_syscall_handler(struct intr_frame* f) {
         return 1;
       }
 
-      file_close(process_file->file);
+      if (process_file->is_dir) {
+        dir_close(process_file->file);
+      } else {
+        file_close(process_file->file);
+      }
+
       remove_process_file(args[1]);
 
       break;
@@ -341,7 +390,12 @@ bool file_syscall_handler(struct intr_frame* f) {
         return 1;
       }
 
-      f->eax = (int)file_inumber(process_file->file);
+      if (process_file->is_dir) {
+        // TODO:
+        f->eax = (int)inode_get_inumber(dir_get_inode(process_file->file));
+      } else {
+        f->eax = (int)file_inumber(process_file->file);
+      }
 
       break;
     case SYS_ISDIR:
@@ -349,15 +403,37 @@ bool file_syscall_handler(struct intr_frame* f) {
 
       process_file = find_process_file(args[1]);
       if (process_file == NULL) {
+        f->eax = -1;
         return 1;
       }
 
-      f->eax = file_is_dir(process_file->file);
+      f->eax = process_file->is_dir;
 
       break;
-    // case SYS_CHDIR:
-    //   validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
-    //   validate_string_in_user_region((char*)args[1]);
+    case SYS_CHDIR:
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[1]);
+
+      filepath = (char*)args[1];
+      struct dir* dir = filesys_opendir(get_anchor_dir(&filepath), filepath);
+      if (dir == NULL) {
+        f->eax = false;
+        return 1;
+      }
+
+      dir_close(cur_t->pcb->current_dir);
+      cur_t->pcb->current_dir = dir;
+
+      f->eax = true;
+
+      break;
+
+    case SYS_MKDIR:
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[1]);
+
+      filepath = (char*)args[1];
+      f->eax = filesys_mkdir(get_anchor_dir(&filepath), filepath);
 
       break;
     default:
