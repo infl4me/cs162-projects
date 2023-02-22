@@ -145,45 +145,48 @@ struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, bool ret
   char name[NAME_MAX + 1];
   const char* srcp = path;
 
-  if (get_next_part(name, &srcp) != 1)
+  int search_result = get_next_part(name, &srcp);
+
+  if (search_result != 1)
     return NULL;
 
   struct inode* inode = NULL;
   struct dir* dir = dir_reopen(anchor_dir);
+  bool lookup_success;
 
-  while (dir != NULL && dir_lookup(dir, name, &inode)) {
-    dir_close(dir);
+  while (dir != NULL && (lookup_success = dir_lookup(dir, name, &inode))) {
+    search_result = get_next_part(name, &srcp);
 
-    switch (get_next_part(name, &srcp)) {
-      // current inode is a dir, go next
-      case 1:
-        dir = dir_open(inode);
-        break;
-      // current inode is the last part of the path, we done
-      case 0:
-        return inode;
-      // path is invalid
-      case -1:
-        return NULL;
-    }
-  }
-
-  // if dir lookup failed
-  // and it's the last directory in the path
-  // and return_dir set to true return directory inode
-  if (dir != NULL && return_dir) {
-    if (filename_buffer != NULL)
-      strlcpy(filename_buffer, name, sizeof name);
-    if (get_next_part(name, &srcp) == 0) {
-      inode = inode_reopen(dir_get_inode(dir));
+    if (search_result == 1) {
       dir_close(dir);
-      return inode;
+      dir = dir_open(inode);
+    } else if (search_result == 0) {
+      break;
+    } else if (search_result == -1) {
+      dir_close(dir);
+      return NULL;
     }
   }
 
-  // if dir lookup failed
+  if (dir == NULL) {
+    return NULL;
+  }
+
+  if (filename_buffer != NULL)
+    strlcpy(filename_buffer, name, sizeof name);
+
+  // if lookup is success and return_dir is true or
+  // if lookup failed but return_dir is true and it is the last part of the PATH
+  // return current dir instead of the file
+  if ((lookup_success && return_dir) ||
+      (!lookup_success && return_dir && get_next_part(name, &srcp) == 0)) {
+    inode_close(inode);
+    inode = inode_reopen(dir_get_inode(dir));
+  }
+
   dir_close(dir);
-  return NULL;
+
+  return inode;
 }
 
 /* Deletes the file named NAME.
