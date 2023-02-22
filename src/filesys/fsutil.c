@@ -56,7 +56,7 @@ void fsutil_rm(char** argv) {
   const char* file_name = argv[1];
 
   printf("Deleting '%s'...\n", file_name);
-  if (!filesys_remove(file_name))
+  if (!filesys_remove(NULL, file_name))
     PANIC("%s: delete failed\n", file_name);
 }
 

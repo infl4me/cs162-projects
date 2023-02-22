@@ -249,9 +249,8 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      // filepath = (char*)args[1];
-      // f->eax = filesys_remove(get_anchor_dir(&filepath), filepath);
-      f->eax = filesys_remove((char*)args[1]);
+      filepath = (char*)args[1];
+      f->eax = filesys_remove(get_anchor_dir(&filepath), filepath);
       break;
     case SYS_OPEN:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));

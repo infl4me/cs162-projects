@@ -193,27 +193,34 @@ struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, bool ret
    Returns true if successful, false on failure.
    Fails if no file named NAME exists,
    or if an internal memory allocation fails. */
-bool filesys_remove(const char* name) {
-  struct dir* dir = dir_open_root();
-  bool success = dir != NULL && dir_remove(dir, name);
-  dir_close(dir);
+bool filesys_remove(struct dir* _anchor_dir, const char* filepath) {
+  struct dir* anchor_dir = _anchor_dir == NULL ? dir_open_root() : _anchor_dir;
 
-  return success;
+  char filename[NAME_MAX + 1];
+  struct inode* dir_inode = dir_tree_lookup(anchor_dir, filepath, true, filename);
+  if (_anchor_dir == NULL) dir_close(anchor_dir);
+
+  struct dir* parent_dir = dir_inode == NULL ? NULL : dir_open(dir_inode);
+  if (parent_dir == NULL) return false;
+
+  struct inode* file_inode = NULL;
+  if (!dir_lookup(parent_dir, filename, &file_inode)) {
+    dir_close(parent_dir);
+    return false;
+  }
+
+  if (inode_is_dir(file_inode) && inode_length(file_inode) != 0) {
+    dir_close(parent_dir);
+    inode_close(file_inode);
+    return false;
+  }
+
+  inode_close(file_inode);
+  dir_remove(parent_dir, filename);
+  dir_close(parent_dir);
+
+  return true;
 }
-// bool filesys_remove(struct dir* anchor_dir, const char* filepath) {
-//   struct dir* dir = anchor_dir == NULL ? dir_open_root() : anchor_dir;
-
-//   char filename[NAME_MAX + 1];
-//   struct inode* inode = dir_tree_lookup(anchor_dir, filepath, true, filename);
-//   if (anchor_dir == NULL) dir_close(dir);
-
-//   struct dir* parent_dir = inode == NULL ? NULL : dir_open(inode);
-
-//   bool success = parent_dir != NULL && dir_remove(parent_dir, filename);
-//   dir_close(parent_dir);
-
-//   return success;
-// }
 
 bool filesys_mkdir(struct dir* anchor_dir, const char* dirpath) {
   char dirname[NAME_MAX + 1];
@@ -226,7 +233,7 @@ bool filesys_mkdir(struct dir* anchor_dir, const char* dirpath) {
 
   block_sector_t inode_sector = 0;
   bool success = (dir != NULL && free_map_allocate(1, &inode_sector) &&
-                  dir_create(inode_sector, 16) && dir_add(dir, dirname, inode_sector));
+                  dir_create(inode_sector, 0) && dir_add(dir, dirname, inode_sector));
 
   if (!success && inode_sector != 0)
     free_map_release(inode_sector, 1);

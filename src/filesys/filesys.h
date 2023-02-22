@@ -16,7 +16,7 @@ void filesys_init(bool format);
 void filesys_done(void);
 bool filesys_create(struct dir* anchor_dir, const char* filepath, off_t initial_size);
 struct file* filesys_open(struct dir* anchor_dir, const char* filepath);
-bool filesys_remove(const char* name);
+bool filesys_remove(struct dir* anchor_dir, const char* name);
 struct dir* filesys_opendir(struct dir* anchor_dir, const char* dirpath);
 bool filesys_mkdir(struct dir* anchor_dir, const char* dirpath);
 struct inode* filesys_open_inode(struct dir* anchor_dir, const char* filepath);
