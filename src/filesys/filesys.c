@@ -5,13 +5,13 @@
 #include "filesys/file.h"
 #include "filesys/free-map.h"
 #include "filesys/inode.h"
-#include "filesys/directory.h"
 
 /* Partition that contains the file system. */
 struct block* fs_device;
 
 static void do_format(void);
-struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, char* filename_buffer);
+struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, bool return_dir,
+                              char* filename_buffer);
 
 /*
   Extracts a file name part from *SRCP into PART, and updates *SRCP so that the
@@ -67,15 +67,24 @@ void filesys_done(void) {
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
    or if internal memory allocation fails. */
-bool filesys_create(const char* name, off_t initial_size) {
+bool filesys_create(struct dir* _anchor_dir, const char* filepath, off_t initial_size) {
   block_sector_t inode_sector = 0;
-  struct dir* dir = dir_open_root();
-  bool success = (dir != NULL && free_map_allocate(1, &inode_sector) &&
+  struct dir* anchor_dir = _anchor_dir == NULL ? dir_open_root() : _anchor_dir;
+
+  char filename[NAME_MAX + 1];
+  struct inode* inode = dir_tree_lookup(anchor_dir, filepath, true, filename);
+
+  if (_anchor_dir == NULL)
+    dir_close(anchor_dir);
+
+  struct dir* parent_dir = inode == NULL ? NULL : dir_open(inode);
+
+  bool success = (parent_dir != NULL && free_map_allocate(1, &inode_sector) &&
                   inode_create(inode_sector, initial_size, INODE_FILE_TYPE) &&
-                  dir_add(dir, name, inode_sector));
+                  dir_add(parent_dir, filename, inode_sector));
   if (!success && inode_sector != 0)
     free_map_release(inode_sector, 1);
-  dir_close(dir);
+  dir_close(parent_dir);
 
   return success;
 }
@@ -85,11 +94,12 @@ bool filesys_create(const char* name, off_t initial_size) {
    otherwise.
    Fails if no file named NAME exists,
    or if an internal memory allocation fails. */
-struct file* filesys_open(const char* name) {
-  struct dir* dir = dir_open_root();
-  struct inode* inode = dir_tree_lookup(dir, name, NULL);
+struct file* filesys_open(struct dir* anchor_dir, const char* name) {
+  struct dir* dir = anchor_dir == NULL ? dir_open_root() : anchor_dir;
+  struct inode* inode = dir_tree_lookup(dir, name, false, NULL);
 
-  dir_close(dir);
+  if (anchor_dir == NULL)
+    dir_close(dir);
 
   if (inode == NULL)
     return NULL;
@@ -103,11 +113,11 @@ struct file* filesys_open(const char* name) {
 }
 
 struct inode* filesys_open_inode(struct dir* anchor_dir, const char* name) {
-  return dir_tree_lookup(anchor_dir, name, NULL);
+  return dir_tree_lookup(anchor_dir, name, false, NULL);
 }
 
 struct dir* filesys_opendir(struct dir* anchor_dir, const char* name) {
-  struct inode* inode = dir_tree_lookup(anchor_dir, name, NULL);
+  struct inode* inode = dir_tree_lookup(anchor_dir, name, false, NULL);
 
   if (inode == NULL)
     return NULL;
@@ -121,10 +131,14 @@ struct dir* filesys_opendir(struct dir* anchor_dir, const char* name) {
 }
 
 /*
-  Looks up for a file or directory inside the given PATH starting at anchor_dir
-  Returns inode or NULL
+  Looks up for a file (or directory) starting at anchor_dir inside the given PATH 
+  if return_dir is true returns inode of the directory that contains the wanted file
+  if filename_buffer is present it's filled with the name of the wanted file
+
+  Returns inode of the wanted file (or directory) or NULL if file not found
 */
-struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, char* filename_buffer) {
+struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, bool return_dir,
+                              char* filename_buffer) {
   if (anchor_dir == NULL)
     return NULL;
 
@@ -155,11 +169,11 @@ struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, char* fi
   }
 
   // if dir lookup failed
-  // and filename_buffer is present
-  // and for given path /A/B, dir A is present but B isn't
-  // return inode of the dir A and fill in the filename_buffer with name of the file B
-  if (dir != NULL && filename_buffer != NULL) {
-    strlcpy(filename_buffer, name, sizeof name);
+  // and it's the last directory in the path
+  // and return_dir set to true return directory inode
+  if (dir != NULL && return_dir) {
+    if (filename_buffer != NULL)
+      strlcpy(filename_buffer, name, sizeof name);
     if (get_next_part(name, &srcp) == 0) {
       inode = inode_reopen(dir_get_inode(dir));
       dir_close(dir);
@@ -183,10 +197,24 @@ bool filesys_remove(const char* name) {
 
   return success;
 }
+// bool filesys_remove(struct dir* anchor_dir, const char* filepath) {
+//   struct dir* dir = anchor_dir == NULL ? dir_open_root() : anchor_dir;
 
-bool filesys_mkdir(struct dir* anchor_dir, const char* file) {
-  char name[NAME_MAX + 1];
-  struct inode* inode = dir_tree_lookup(anchor_dir, file, name);
+//   char filename[NAME_MAX + 1];
+//   struct inode* inode = dir_tree_lookup(anchor_dir, filepath, true, filename);
+//   if (anchor_dir == NULL) dir_close(dir);
+
+//   struct dir* parent_dir = inode == NULL ? NULL : dir_open(inode);
+
+//   bool success = parent_dir != NULL && dir_remove(parent_dir, filename);
+//   dir_close(parent_dir);
+
+//   return success;
+// }
+
+bool filesys_mkdir(struct dir* anchor_dir, const char* dirpath) {
+  char dirname[NAME_MAX + 1];
+  struct inode* inode = dir_tree_lookup(anchor_dir, dirpath, true, dirname);
 
   if (inode == NULL)
     return false;
@@ -195,7 +223,7 @@ bool filesys_mkdir(struct dir* anchor_dir, const char* file) {
 
   block_sector_t inode_sector = 0;
   bool success = (dir != NULL && free_map_allocate(1, &inode_sector) &&
-                  dir_create(inode_sector, 16) && dir_add(dir, name, inode_sector));
+                  dir_create(inode_sector, 16) && dir_add(dir, dirname, inode_sector));
 
   if (!success && inode_sector != 0)
     free_map_release(inode_sector, 1);

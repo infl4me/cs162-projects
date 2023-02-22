@@ -763,7 +763,8 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   process_activate();
 
   /* Open executable file. */
-  file = filesys_open(file_name);
+  struct dir* dir = dir_open_root();
+  file = filesys_open(dir, file_name);
   if (file == NULL) {
     printf("load: %s: open failed\n", file_name);
     goto done;
@@ -840,6 +841,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
 done:
   /* We arrive here whether the load is successful or not. */
+  dir_close(dir);
 
   if (!success) {
     file_close(file);

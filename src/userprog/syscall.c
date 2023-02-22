@@ -242,12 +242,15 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], 2 * sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      f->eax = filesys_create((char*)args[1], args[2]);
+      filepath = (char*)args[1];
+      f->eax = filesys_create(get_anchor_dir(&filepath), filepath, args[2]);
       break;
     case SYS_REMOVE:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
+      // filepath = (char*)args[1];
+      // f->eax = filesys_remove(get_anchor_dir(&filepath), filepath);
       f->eax = filesys_remove((char*)args[1]);
       break;
     case SYS_OPEN:
@@ -255,7 +258,6 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_string_in_user_region((char*)args[1]);
 
       filepath = (char*)args[1];
-
       struct inode* inode = filesys_open_inode(get_anchor_dir(&filepath), filepath);
 
       if (inode == NULL) {
