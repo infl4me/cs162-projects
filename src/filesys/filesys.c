@@ -141,6 +141,12 @@ struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, bool ret
                               char* filename_buffer) {
   if (anchor_dir == NULL)
     return NULL;
+  if (inode_get_sector(dir_get_inode(anchor_dir)) == ROOT_DIR_SECTOR) {
+    // handle corner case of path="/" here
+    if (path[0] == '/' && path[1] == '\0') {
+      return inode_reopen(dir_get_inode(anchor_dir));
+    }
+  }
 
   char name[NAME_MAX + 1];
   const char* srcp = path;
@@ -189,6 +195,13 @@ struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, bool ret
   return inode;
 }
 
+bool filesys_is_empty_dir(struct inode* dir_inode);
+bool filesys_is_empty_dir(struct inode* dir_inode) {
+  // each dir contains at least two entries: "." and ".."
+  // so consider that anything bigger then two entries is not empty
+  return (uint32_t)inode_length(dir_inode) <= sizeof(struct dir_entry) * 2;
+}
+
 /* Deletes the file named NAME.
    Returns true if successful, false on failure.
    Fails if no file named NAME exists,
@@ -198,10 +211,12 @@ bool filesys_remove(struct dir* _anchor_dir, const char* filepath) {
 
   char filename[NAME_MAX + 1];
   struct inode* dir_inode = dir_tree_lookup(anchor_dir, filepath, true, filename);
-  if (_anchor_dir == NULL) dir_close(anchor_dir);
+  if (_anchor_dir == NULL)
+    dir_close(anchor_dir);
 
   struct dir* parent_dir = dir_inode == NULL ? NULL : dir_open(dir_inode);
-  if (parent_dir == NULL) return false;
+  if (parent_dir == NULL)
+    return false;
 
   struct inode* file_inode = NULL;
   if (!dir_lookup(parent_dir, filename, &file_inode)) {
@@ -209,7 +224,7 @@ bool filesys_remove(struct dir* _anchor_dir, const char* filepath) {
     return false;
   }
 
-  if (inode_is_dir(file_inode) && inode_length(file_inode) != 0) {
+  if (inode_is_dir(file_inode) && !filesys_is_empty_dir(file_inode)) {
     dir_close(parent_dir);
     inode_close(file_inode);
     return false;
@@ -229,25 +244,41 @@ bool filesys_mkdir(struct dir* anchor_dir, const char* dirpath) {
   if (inode == NULL)
     return false;
 
-  struct dir* dir = dir_open(inode);
+  struct dir* parent_dir = dir_open(inode);
 
   block_sector_t inode_sector = 0;
-  bool success = (dir != NULL && free_map_allocate(1, &inode_sector) &&
-                  dir_create(inode_sector, 0) && dir_add(dir, dirname, inode_sector));
+  bool success = (parent_dir != NULL && free_map_allocate(1, &inode_sector) &&
+                  dir_create(inode_sector, 0) && dir_add(parent_dir, dirname, inode_sector));
+
+  struct dir* new_dir = success ? dir_open(inode_open(inode_sector)) : NULL;
+  if (success && new_dir != NULL) {
+    success = dir_add(new_dir, ".", inode_sector) &&
+              dir_add(new_dir, "..", inode_get_sector(dir_get_inode(parent_dir)));
+    dir_close(new_dir);
+  }
+              ASSERT(success);
 
   if (!success && inode_sector != 0)
     free_map_release(inode_sector, 1);
-  dir_close(dir);
+  dir_close(parent_dir);
 
-  return true;
+  return success;
 }
 
 /* Formats the file system. */
 static void do_format(void) {
   printf("Formatting file system...");
   free_map_create();
-  if (!dir_create(ROOT_DIR_SECTOR, 16))
+  bool success = dir_create(ROOT_DIR_SECTOR, 16);
+  if (success) {
+    struct dir* root_dir = dir_open(inode_open(ROOT_DIR_SECTOR));
+    success = root_dir != NULL && dir_add(root_dir, ".", ROOT_DIR_SECTOR) &&
+              dir_add(root_dir, "..", ROOT_DIR_SECTOR);
+    dir_close(root_dir);
+  } else {
     PANIC("root directory creation failed");
+  }
+
   free_map_close();
   printf("done.\n");
 }

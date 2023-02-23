@@ -266,9 +266,9 @@ struct inode* inode_reopen(struct inode* inode) {
 /* Returns INODE's inode number. */
 block_sector_t inode_get_inumber(const struct inode* inode) { return inode->sector; }
 
-bool inode_is_dir(const struct inode* inode) {
-  return inode->data.flags & INODE_DIR_TYPE;
-}
+block_sector_t inode_get_sector(const struct inode* inode) { return inode->sector; }
+
+bool inode_is_dir(const struct inode* inode) { return inode->data.flags & INODE_DIR_TYPE; }
 
 /* Closes INODE and writes it to disk.
    If this was the last reference to INODE, frees its memory.

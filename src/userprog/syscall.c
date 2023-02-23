@@ -215,12 +215,6 @@ struct dir* get_anchor_dir(char** filepathp) {
 
   if (filepath[0] == '/') {
     dir = dir_open_root();
-  } else if (filepath[0] == '.' && filepath[1] == '.') {
-    dir = cur_t->pcb->parent_dir;
-    *filepath += 2;
-  } else if (filepath[0] == '.') {
-    dir = cur_t->pcb->current_dir;
-    *filepath += 1;
   } else {
     dir = cur_t->pcb->current_dir;
   }
