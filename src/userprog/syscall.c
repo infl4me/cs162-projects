@@ -431,6 +431,20 @@ bool file_syscall_handler(struct intr_frame* f) {
       f->eax = filesys_mkdir(get_anchor_dir(&filepath), filepath);
 
       break;
+    case SYS_READDIR:
+      validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
+      validate_buffer_in_user_region(&args[2], sizeof(uint32_t));
+      validate_string_in_user_region((char*)args[2]);
+
+      process_file = find_process_file(args[1]);
+      if (process_file == NULL || !process_file->is_dir) {
+        f->eax = false;
+        return 1;
+      }
+
+      f->eax = filesys_readdir((struct dir*)process_file->file, (char*)args[2]);
+
+      break;
     default:
       return 0;
   }

@@ -18,7 +18,9 @@ struct dir* dir_open(struct inode* inode) {
   struct dir* dir = calloc(1, sizeof *dir);
   if (inode != NULL && dir != NULL) {
     dir->inode = inode;
-    dir->pos = 0;
+    // each dir contains at least two entries: "." and ".."
+    // therefore need to align pos accordignly
+    dir->pos = sizeof(struct dir_entry) * 2;
     return dir;
   } else {
     inode_close(inode);

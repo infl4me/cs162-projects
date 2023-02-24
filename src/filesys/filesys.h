@@ -20,5 +20,6 @@ bool filesys_remove(struct dir* anchor_dir, const char* name);
 struct dir* filesys_opendir(struct dir* anchor_dir, const char* dirpath);
 bool filesys_mkdir(struct dir* anchor_dir, const char* dirpath);
 struct inode* filesys_open_inode(struct dir* anchor_dir, const char* filepath);
+bool filesys_readdir(struct dir* dir, char* buffer);
 
 #endif /* filesys/filesys.h */

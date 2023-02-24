@@ -197,9 +197,15 @@ struct inode* dir_tree_lookup(struct dir* anchor_dir, const char* path, bool ret
 
 bool filesys_is_empty_dir(struct inode* dir_inode);
 bool filesys_is_empty_dir(struct inode* dir_inode) {
-  // each dir contains at least two entries: "." and ".."
-  // so consider that anything bigger then two entries is not empty
-  return (uint32_t)inode_length(dir_inode) <= sizeof(struct dir_entry) * 2;
+  struct dir* dir = dir_open(dir_inode);
+  if (dir == NULL) return false;
+
+  char name[NAME_MAX + 1];
+  bool is_empty = !dir_readdir(dir, name);
+
+  dir_close(dir);
+
+  return is_empty;
 }
 
 /* Deletes the file named NAME.
@@ -262,6 +268,10 @@ bool filesys_mkdir(struct dir* anchor_dir, const char* dirpath) {
   dir_close(parent_dir);
 
   return success;
+}
+
+bool filesys_readdir(struct dir* dir, char* buffer) {
+  return dir_readdir(dir, buffer);
 }
 
 /* Formats the file system. */
