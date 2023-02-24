@@ -131,8 +131,3 @@ block_sector_t file_inumber(struct file* file) {
   ASSERT(file != NULL);
   return inode_get_inumber(file->inode);
 }
-
-bool file_is_dir(struct file* file) {
-  ASSERT(file != NULL);
-  return inode_is_dir(file->inode);
-}
