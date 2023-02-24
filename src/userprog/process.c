@@ -162,7 +162,6 @@ void userprog_init(void) {
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
   t->pcb->pid = t->tid;
-  t->pcb->parent_dir = NULL;
   t->pcb->current_dir = NULL;
 
   list_init(&process_children);
@@ -282,13 +281,11 @@ static void start_process(void* args_) {
   if (success) {
     if (args->parent_dir == NULL) {
       // if it's first process current_dir is root and no parent_dir
-      new_pcb->parent_dir = NULL;
       new_pcb->current_dir = dir_open_root();
       success = new_pcb->current_dir != NULL;
     } else {
-      new_pcb->parent_dir = dir_reopen(args->parent_dir);
       new_pcb->current_dir = dir_reopen(args->parent_dir);
-      success = new_pcb->parent_dir != NULL && new_pcb->current_dir != NULL;
+      success = new_pcb->current_dir != NULL;
     }
   }
 
@@ -389,7 +386,6 @@ static void start_process(void* args_) {
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
   if (!success && pcb_success) {
-    dir_close(new_pcb->parent_dir);
     dir_close(new_pcb->current_dir);
 
     // Avoid race where PCB is freed before t->pcb is set to NULL
@@ -575,7 +571,6 @@ void process_exit(int status) {
 
   file_close(cur_t->pcb->exec_file);
 
-  dir_close(cur_t->pcb->parent_dir);
   dir_close(cur_t->pcb->current_dir);
 
   // free process file descriptors

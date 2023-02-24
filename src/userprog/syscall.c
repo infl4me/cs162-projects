@@ -23,7 +23,7 @@ void syscall_acquire(void);
 bool file_syscall_handler(struct intr_frame*);
 void validate_string_in_user_region(const char* string);
 void validate_buffer_in_user_region(const void* buffer, size_t length);
-struct dir* get_anchor_dir(char** filepathp);
+struct dir* get_anchor_dir(char* filepath);
 
 static struct lock syscall_lock;
 
@@ -208,15 +208,14 @@ void syscall_handler(struct intr_frame* f) {
   syscall_release();
 }
 
-struct dir* get_anchor_dir(char** filepathp) {
+struct dir* get_anchor_dir(char* filepath) {
   struct dir* dir = NULL;
   struct thread* cur_t = thread_current();
-  char* filepath = *filepathp;
 
   if (filepath[0] == '/') {
     dir = dir_open_root();
   } else {
-    dir = cur_t->pcb->current_dir;
+    dir = cur_t->pcb->current_dir == NULL ? NULL : dir_reopen(cur_t->pcb->current_dir);
   }
 
   return dir;
@@ -228,7 +227,7 @@ bool file_syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
   struct process_file* process_file;
   struct thread* cur_t = thread_current();
-  char* filepath = NULL;
+  struct dir* anchor_dir = NULL;
 
   switch (args[0]) {
     // FILESYS SYSCALLS
@@ -236,22 +235,47 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], 2 * sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      filepath = (char*)args[1];
-      f->eax = filesys_create(get_anchor_dir(&filepath), filepath, args[2]);
+      anchor_dir = get_anchor_dir((char*)args[1]);
+      if (anchor_dir == NULL) {
+        f->eax = false;
+        return 1;
+      }
+
+      f->eax = filesys_create(anchor_dir, (char*)args[1], args[2]);
+      dir_close(anchor_dir);
+
       break;
     case SYS_REMOVE:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      filepath = (char*)args[1];
-      f->eax = filesys_remove(get_anchor_dir(&filepath), filepath);
+      anchor_dir = get_anchor_dir((char*)args[1]);
+      if (anchor_dir == NULL) {
+        f->eax = false;
+        return 1;
+      }
+
+      f->eax = filesys_remove(anchor_dir, (char*)args[1]);
+      dir_close(anchor_dir);
+
+      if (cur_t->pcb->current_dir->inode->removed) {
+        dir_close(cur_t->pcb->current_dir);
+        cur_t->pcb->current_dir = NULL;
+      }
+
       break;
     case SYS_OPEN:
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      filepath = (char*)args[1];
-      struct inode* inode = filesys_open_inode(get_anchor_dir(&filepath), filepath);
+      anchor_dir = get_anchor_dir((char*)args[1]);
+      if (anchor_dir == NULL) {
+        f->eax = FD_ERROR;
+        return 1;
+      }
+
+      struct inode* inode = filesys_open_inode(anchor_dir, (char*)args[1]);
+      dir_close(anchor_dir);
 
       if (inode == NULL) {
         f->eax = FD_ERROR;
@@ -386,7 +410,6 @@ bool file_syscall_handler(struct intr_frame* f) {
       }
 
       if (process_file->is_dir) {
-        // TODO:
         f->eax = (int)inode_get_inumber(dir_get_inode(process_file->file));
       } else {
         f->eax = (int)file_inumber(process_file->file);
@@ -409,8 +432,15 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      filepath = (char*)args[1];
-      struct dir* dir = filesys_opendir(get_anchor_dir(&filepath), filepath);
+      anchor_dir = get_anchor_dir((char*)args[1]);
+      if (anchor_dir == NULL) {
+        f->eax = false;
+        return 1;
+      }
+
+      struct dir* dir = filesys_opendir(anchor_dir, (char*)args[1]);
+      dir_close(anchor_dir);
+
       if (dir == NULL) {
         f->eax = false;
         return 1;
@@ -427,8 +457,14 @@ bool file_syscall_handler(struct intr_frame* f) {
       validate_buffer_in_user_region(&args[1], sizeof(uint32_t));
       validate_string_in_user_region((char*)args[1]);
 
-      filepath = (char*)args[1];
-      f->eax = filesys_mkdir(get_anchor_dir(&filepath), filepath);
+      anchor_dir = get_anchor_dir((char*)args[1]);
+      if (anchor_dir == NULL) {
+        f->eax = false;
+        return 1;
+      }
+
+      f->eax = filesys_mkdir(anchor_dir, (char*)args[1]);
+      dir_close(anchor_dir);
 
       break;
     case SYS_READDIR:

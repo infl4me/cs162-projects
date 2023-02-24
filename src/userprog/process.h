@@ -45,7 +45,6 @@ struct process {
   uint32_t process_threads_count;
   uint32_t process_stack_pages_count;
   struct dir* current_dir;
-  struct dir* parent_dir;
 };
 
 struct process_child {
