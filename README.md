@@ -9,6 +9,8 @@ The purpose of this course is to teach the design of operating systems and opera
 ## Projects Overview
 Our projects in CS 162 will use [Pintos](https://en.wikipedia.org/wiki/Pintos), an educational operating system. They’re designed to give you practical experience with the central ideas of operating systems in the context of developing a real, working kernel, without being excessively complex. The skeleton code for Pintos has several limitations in its file system, thread scheduler, and support for user programs. In the course of these projects, you will greatly improve Pintos in each of these areas.
 
+## Completed tasks
+
 ### [Project 1: User Programs:](https://inst.eecs.berkeley.edu/~cs162/sp22/static/proj/proj-userprog.pdf)
 - **Argument passing.** The `process_execute` function is used to create new user processes in Pintos. Currently, it does not support command-line arguments. You must implement argument passing such that the main function of the user process will receive the appropriate `argc` and `argv`.
 - **Process Control Syscalls.** Pintos currently only supports one syscall, `exit`, which terminates the calling process. You will add support for the following new syscalls: `practice`, `halt`, `exec`, `wait`.
