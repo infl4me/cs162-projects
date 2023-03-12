@@ -1,7 +1,7 @@
 CS 162 Projects Repository
 =======================
 
-Current repository contains my solutions for projects of Berkley's [Computer Science 162 — operating systems and system programming course](https://hkn.eecs.berkeley.edu/courseguides/CS/162). Assigments: [link](https://inst.eecs.berkeley.edu/~cs162/sp22/)
+Current repository contains my solutions for projects of Berkeley's [Computer Science 162 — operating systems and system programming course](https://hkn.eecs.berkeley.edu/courseguides/CS/162). Assigments: [link](https://inst.eecs.berkeley.edu/~cs162/sp22/)
 
 ## Course Overview
 The purpose of this course is to teach the design of operating systems and operating systems concepts that appear in other advanced systems. Topics covered include operating systems, systems programming, networked and distributed systems, and storage systems, including multiple-program systems (processes, interprocess communication, synchronization), memory allocation (segmentation, paging), resource allocation and scheduling, file systems, basic networking (sockets, layering, APIs, reliability), transactions, security and privacy.
